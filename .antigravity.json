@@ -1,0 +1,41 @@
+{
+  "workspace": {
+    "name": "Antigravity Project Workspace",
+    "description": "Multi-app workspace setup for Node/Express Oracle Backend and Angular Frontend"
+  },
+  "apps": {
+    "backend": {
+      "name": "backend-oracle-model",
+      "path": "d:/proj/api/backend-oracle-model",
+      "type": "backend",
+      "port": 4000,
+      "environment": {
+        "PORT": 4000,
+        "NODE_ORACLEDB_USER": "NORAPAT",
+        "NODE_ORACLEDB_CONNECTIONSTRING": "localhost:1521/xe"
+      },
+      "commands": {
+        "start": "npm start",
+        "test": "npm test"
+      }
+    },
+    "frontend": {
+      "name": "ru-front",
+      "path": "d:/proj/ru-front",
+      "type": "frontend",
+      "port": 4200,
+      "commands": {
+        "start": "npm start",
+        "test": "npm test"
+      }
+    }
+  },
+  "communications": [
+    {
+      "caller": "frontend",
+      "callee": "backend",
+      "protocol": "http",
+      "baseUrl": "http://localhost:4000/api/service/frontend"
+    }
+  ]
+}

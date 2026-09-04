@@ -1,0 +1,30 @@
+services:
+  test01-api:
+    restart: always
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    image: test01-api:0.0.1
+    # volumes:
+    #   - ./uploads:/usr/src/app/uploads
+    env_file:
+      - .env
+    ports:
+      - 4000:4000
+    networks:
+      test01-api:
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Bangkok
+      NODE_ORACLEDB_CONNECTIONSTRING: host.docker.internal:1521/XE
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  test01-api:
+    name: test01-api
+
+#     ipam:
+#       driver: default
+#       config:
+#         - subnet: 192.168.3.1/26
