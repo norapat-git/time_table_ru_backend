@@ -71,3 +71,8 @@ testem.log
 Thumbs.db
 __MACOSX/
 *.env
+
+# Database schema files
+controllers/db/*.md
+**/db/*.md
+
