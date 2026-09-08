@@ -7,6 +7,44 @@ const UpdateModel = require('../../../models/db/UpDateModel');
 const Authen = require('../../../utils/microsoft/login');
 const { signToken } = require('../auth_sign');
 
+/**
+ * ดึงรูปโปรไฟล์ Microsoft 365 ฝั่ง Backend อย่างปลอดภัย (ไม่ส่ง Token / Credentials ใดๆ ให้ Frontend)
+ */
+async function resolveMicrosoftProfilePhoto(auth) {
+    if (!auth || typeof auth !== 'object') return null;
+
+    try {
+        // 1. ตรวจสอบว่ามี URL หรือ Base64 รูปภาพมาใน response ของ authen365 โดยตรงหรือไม่
+        const directPhoto = auth.photo || auth.picture || auth.avatar || auth.avatarUrl || auth.user?.photo || auth.user?.picture;
+        if (directPhoto && typeof directPhoto === 'string') {
+            if (directPhoto.startsWith('http://') || directPhoto.startsWith('https://') || directPhoto.startsWith('data:image/')) {
+                return directPhoto;
+            }
+            return `data:image/jpeg;base64,${directPhoto}`;
+        }
+
+        // 2. ถ้ามี Access Token จาก Microsoft ให้ Backend ยิงไปขอรูปจาก Microsoft Graph API โดยตรง
+        const msToken = auth.access_token || auth.accessToken || auth.token;
+        if (msToken && typeof msToken === 'string') {
+            const photoRes = await axios.get('https://graph.microsoft.com/v1.0/me/photo/$value', {
+                headers: { Authorization: `Bearer ${msToken}` },
+                responseType: 'arraybuffer',
+                timeout: 5000
+            });
+            if (photoRes.data) {
+                const contentType = photoRes.headers['content-type'] || 'image/jpeg';
+                const base64 = Buffer.from(photoRes.data, 'binary').toString('base64');
+                return `data:${contentType};base64,${base64}`;
+            }
+        }
+    } catch (err) {
+        // ไม่พบรูป หรือไม่มีสิทธิ์เข้าถึง (เช่น user ไม่ได้ตั้งรูปใน Microsoft) -> คืนค่า null อย่างปลอดภัย
+        console.log('[Microsoft Photo Info]: ไม่พบรูปโปรไฟล์หรือเข้าถึงไม่ได้:', err.message);
+    }
+
+    return null;
+}
+
 const DataController = {
 
     async getMicrosoftLogin(req, res) {
@@ -46,6 +84,20 @@ const DataController = {
                 return res.status(200).json({ success: false, message: auth?.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
             }
 
+            // ดึงรูปโปรไฟล์ Microsoft ฝั่ง Backend (ปลอดภัย 100% ไม่ส่ง Token หรือ Credential ให้ Frontend)
+            const avatarUrl = await resolveMicrosoftProfilePhoto(auth);
+
+            // กรองและลบข้อมูล Token / Credentials ทั้งหมดออกจาก auth_profile เพื่อความปลอดภัยสูงสุด
+            const safeAuthProfile = typeof auth === 'object' && auth !== null ? { ...auth } : {};
+            delete safeAuthProfile.access_token;
+            delete safeAuthProfile.accessToken;
+            delete safeAuthProfile.token;
+            delete safeAuthProfile.refresh_token;
+            delete safeAuthProfile.refreshToken;
+            delete safeAuthProfile.password;
+            delete safeAuthProfile.pwd;
+            delete safeAuthProfile.secret;
+
             data = [email];
             sql = `update RG_SCHEDULE_ACCOUNT set USER_STATEIN_TIME=SYSDATE where USER_EMAIL=:1`;
             await UpdateModel.updatedb(res, sql, data);
@@ -53,7 +105,8 @@ const DataController = {
             // merge data
             const results = {
                 ...results_user[0],
-                auth_profile: auth
+                avatarUrl: avatarUrl || undefined,
+                auth_profile: safeAuthProfile
             };
 
             // สร้าง Signed JWT Token สำหรับผู้ใช้งาน (อายุ 12 ชั่วโมง)
@@ -65,6 +118,7 @@ const DataController = {
                 lastNameTH: '',
                 role: 'ADMIN',
                 roles: ['ADMIN'],
+                avatarUrl: avatarUrl || undefined,
             };
             const token = signToken(tokenPayload, '12h');
 
@@ -72,6 +126,7 @@ const DataController = {
                 success: true,
                 message: 'Login successful',
                 token,
+                avatarUrl: avatarUrl || undefined,
                 results
             });
 
