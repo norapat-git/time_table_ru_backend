@@ -8,7 +8,7 @@ const Authen = require('../../../utils/microsoft/login');
 const { signToken } = require('../auth_sign');
 
 /**
- * ดึงรูปโปรไฟล์ Microsoft 365 ฝั่ง Backend อย่างปลอดภัย (ไม่ส่ง Token / Credentials ใดๆ ให้ Frontend)
+ * ดึงรูปโปรไฟล์ Microsoft 365 ฝั่ง Backend
  */
 async function resolveMicrosoftProfilePhoto(auth) {
     if (!auth || typeof auth !== 'object') return null;
@@ -23,7 +23,7 @@ async function resolveMicrosoftProfilePhoto(auth) {
             return `data:image/jpeg;base64,${directPhoto}`;
         }
 
-        // 2. ถ้ามี Access Token จาก Microsoft ให้ Backend ยิงไปขอรูปจาก Microsoft Graph API โดยตรง
+        // ถ้ามี Access Token จาก Microsoft ให้ Backend ยิงไปขอรูปจาก Microsoft Graph API โดยตรง
         const msToken = auth.access_token || auth.accessToken || auth.token;
         if (msToken && typeof msToken === 'string') {
             const photoRes = await axios.get('https://graph.microsoft.com/v1.0/me/photo/$value', {
@@ -38,7 +38,7 @@ async function resolveMicrosoftProfilePhoto(auth) {
             }
         }
     } catch (err) {
-        // ไม่พบรูป หรือไม่มีสิทธิ์เข้าถึง (เช่น user ไม่ได้ตั้งรูปใน Microsoft) -> คืนค่า null อย่างปลอดภัย
+        // ไม่พบรูป หรือไม่มีสิทธิ์เข้าถึง
         console.log('[Microsoft Photo Info]: ไม่พบรูปโปรไฟล์หรือเข้าถึงไม่ได้:', err.message);
     }
 
@@ -84,10 +84,10 @@ const DataController = {
                 return res.status(200).json({ success: false, message: auth?.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
             }
 
-            // ดึงรูปโปรไฟล์ Microsoft ฝั่ง Backend (ปลอดภัย 100% ไม่ส่ง Token หรือ Credential ให้ Frontend)
+            // ดึงรูปโปรไฟล์ Microsoft ฝั่ง Backend
             const avatarUrl = await resolveMicrosoftProfilePhoto(auth);
 
-            // กรองและลบข้อมูล Token / Credentials ทั้งหมดออกจาก auth_profile เพื่อความปลอดภัยสูงสุด
+            // กรองและลบข้อมูล Token / Credentials ทั้งหมดออกจาก auth_profile 
             const safeAuthProfile = typeof auth === 'object' && auth !== null ? { ...auth } : {};
             delete safeAuthProfile.access_token;
             delete safeAuthProfile.accessToken;
@@ -109,7 +109,7 @@ const DataController = {
                 auth_profile: safeAuthProfile
             };
 
-            // สร้าง Signed JWT Token สำหรับผู้ใช้งาน (อายุ 12 ชั่วโมง)
+            // สร้าง Signed JWT Token 1 hr.
             const tokenPayload = {
                 userId: results_user[0].USER_EMAIL || email,
                 username: (results_user[0].USER_EMAIL || email).split('@')[0],
@@ -118,9 +118,8 @@ const DataController = {
                 lastNameTH: '',
                 role: 'ADMIN',
                 roles: ['ADMIN'],
-                avatarUrl: avatarUrl || undefined,
             };
-            const token = signToken(tokenPayload, '12h');
+            const token = signToken(tokenPayload, '1h');
 
             return res.status(200).json({
                 success: true,
@@ -136,7 +135,7 @@ const DataController = {
 
     },
 
-    // Endpoint จำลองการเข้าสู่ระบบตามสิทธิ์ต่างๆ (สำหรับ Dev / Quick Login)
+    // Endpoint จำลองการเข้าสู่ระบบตามสิทธิ์ต่างๆ
     async getPresetLogin(req, res) {
         try {
             const { role = 'ADMIN', email = 'dev07@ru.ac.th', name = 'นายทดสอบ พัฒนาระบบ' } = req.body;
@@ -151,7 +150,7 @@ const DataController = {
                 role: validRole,
                 roles: [validRole],
             };
-            const token = signToken(tokenPayload, '12h');
+            const token = signToken(tokenPayload, '1h');
 
             return res.status(200).json({
                 success: true,
@@ -169,7 +168,7 @@ const DataController = {
         }
     },
 
-    // บันทึกเวลาออกจากระบบ (USER_STATEOUT_TIME)
+    // บันทึกเวลาออกจากระบบ
     async logout(req, res) {
         try {
             const { email } = req.body;

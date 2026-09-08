@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET || process.env.secrete_id || 'ru_timetable_secret_key_2026';
-const JWT_EXPIRES_IN = '12h';
+const JWT_EXPIRES_IN = '1h';
 
 class AuthenticateToken {
     /**
