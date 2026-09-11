@@ -3,6 +3,14 @@ const InsertModel = require('../../models/db/InsertModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
+function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
+    if (!raw) return defaultVal;
+    const str = raw.toString().trim();
+    if (!str) return defaultVal;
+    const name = str.split('@')[0].trim();
+    return name || defaultVal;
+}
+
 const InstructorController = {
     // 1. ดึงรายชื่ออาจารย์ที่เปิดสอนในปีภาคที่เลือก (LIST)
     async listScheduleInstructors(req, res) {
@@ -184,7 +192,7 @@ const InstructorController = {
 
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
-            const cleanUser = (userInsert || req.body.user || req.body.email || 'SYSTEM').toString().trim();
+            const cleanUser = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
 
             const codeList = Array.isArray(instructorCodes)
                 ? instructorCodes.map(c => c.toString().trim()).filter(Boolean)
@@ -256,7 +264,7 @@ const InstructorController = {
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
             const cleanCode = instructorCode.toString().trim();
-            const cleanUserHis = (userInsert || req.body.user || req.body.email || 'SYSTEM').toString().trim();
+            const cleanUserHis = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 // 0. ตรวจสอบว่าอาจารย์ถูกนำไปจัดในตารางสอน RG_SCHEDULE_CLASS แล้วหรือไม่
@@ -326,7 +334,7 @@ const InstructorController = {
 
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
-            const cleanUserHis = (userInsert || req.body.user || req.body.email || 'SYSTEM').toString().trim();
+            const cleanUserHis = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
             const codeList = instructorCodes.map(c => c.toString().trim()).filter(Boolean);
 
             let deletedCount = 0;

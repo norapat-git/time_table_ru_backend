@@ -4,6 +4,14 @@ const UpdateModel = require('../../models/db/UpDateModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
+function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
+    if (!raw) return defaultVal;
+    const str = raw.toString().trim();
+    if (!str) return defaultVal;
+    const name = str.split('@')[0].trim();
+    return name || defaultVal;
+}
+
 const CourseController = {
     // 1. ดึงรายการวิชาที่เปิดสอนตามปี/ภาค (LIST)
     async listCourses(req, res) {
@@ -32,6 +40,8 @@ const CourseController = {
                     TRIM(c.STUDY_SEMESTER) AS STUDY_SEMESTER,
                     TRIM(c.COURSE_NO) AS COURSE_NO,
                     TRIM(c.COURSE_REMARK) AS COURSE_REMARK,
+                    TO_CHAR(c.INSERT_DATE, 'YYYY-MM-DD HH24:MI:SS') AS INSERT_DATE,
+                    TRIM(c.USER_INSERT) AS USER_INSERT,
                     TRIM(u.COURSE_NAME_THAI) AS COURSE_NAME_THAI,
                     TRIM(u.COURSE_NAME_ENG_L) AS COURSE_NAME_ENG_L,
                     u.CREDIT,
@@ -196,7 +206,7 @@ const CourseController = {
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
             const cleanRemark = courseRemark ? courseRemark.toString().trim() : null;
-            const cleanUser = (userInsert || req.body?.user || req.body?.email || req.headers?.['x-user'] || 'SYSTEM').toString().trim();
+            const cleanUser = sanitizeUsername(userInsert || req.body?.user || req.body?.email || req.headers?.['x-user'], 'SYSTEM');
 
             // ตรวจสอบว่ามีปีและภาคการศึกษานี้อยู่ในตาราง RG_SCHEDULE_YEARSEM หรือไม่ (ห้ามเพิ่มวิชาหากไม่มีปีภาค)
             const yearSemCheckSql = `
@@ -282,7 +292,7 @@ const CourseController = {
     // 6. แก้ไขข้อมูลวิชาที่เปิดสอน (EDIT)
     async updateCourse(req, res) {
         try {
-            const { studyYear, studySemester, oldCourseNo, newCourseNo, courseRemark } = req.body;
+            const { studyYear, studySemester, oldCourseNo, newCourseNo, courseRemark, userInsert } = req.body;
             if (!studyYear || !studySemester || !oldCourseNo || !newCourseNo) {
                 return res.status(400).json({ success: false, message: 'ข้อมูลไม่ครบถ้วน' });
             }
@@ -290,8 +300,9 @@ const CourseController = {
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
             const cleanOldCourse = oldCourseNo.toString().trim().toUpperCase();
-            const cleanNewCourse = newCourseNo.toString().trim().toUpperCase();
+            const cleanNewCourse = (newCourseNo || courseNo).toString().trim().toUpperCase();
             const cleanRemark = courseRemark ? courseRemark.toString().trim() : null;
+            const cleanUser = sanitizeUsername(userInsert || req.body?.user || req.body?.email || req.headers?.['x-user'], 'SYSTEM');
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 // หากเปลี่ยนรหัสวิชา ให้ตรวจเช็คว่าซ้ำหรือไม่
@@ -310,10 +321,12 @@ const CourseController = {
                 const updateSql = `
                     UPDATE RG_SCHEDULE_COURSE 
                     SET COURSE_NO = :1,
-                        COURSE_REMARK = :2
-                    WHERE TRIM(STUDY_YEAR) = :3 AND TRIM(STUDY_SEMESTER) = :4 AND TRIM(COURSE_NO) = :5
+                        COURSE_REMARK = :2,
+                        INSERT_DATE = SYSDATE,
+                        USER_INSERT = :3
+                    WHERE TRIM(STUDY_YEAR) = :4 AND TRIM(STUDY_SEMESTER) = :5 AND TRIM(COURSE_NO) = :6
                 `;
-                const result = await tx.executeOne(updateSql, [cleanNewCourse, cleanRemark, cleanYear, cleanSem, cleanOldCourse]);
+                const result = await tx.executeOne(updateSql, [cleanNewCourse, cleanRemark, cleanUser, cleanYear, cleanSem, cleanOldCourse]);
                 if (result.rowsAffected === 0) {
                     throw new Error('ไม่พบข้อมูลวิชาที่ต้องการแก้ไข');
                 }
@@ -322,7 +335,13 @@ const CourseController = {
             return res.status(200).json({
                 success: true,
                 message: `แก้ไขวิชา ${cleanNewCourse} สำเร็จ`,
-                results: { STUDY_YEAR: cleanYear, STUDY_SEMESTER: cleanSem, COURSE_NO: cleanNewCourse, COURSE_REMARK: cleanRemark }
+                results: { 
+                    STUDY_YEAR: cleanYear, 
+                    STUDY_SEMESTER: cleanSem, 
+                    COURSE_NO: cleanNewCourse, 
+                    COURSE_REMARK: cleanRemark,
+                    USER_INSERT: cleanUser
+                }
             });
         } catch (error) {
             console.error('[CourseController.updateCourse error]', error);
@@ -341,7 +360,7 @@ const CourseController = {
             const cleanYear = year.toString().trim();
             const cleanSem = semester.toString().trim();
             const cleanCourse = courseNo.toString().trim().toUpperCase();
-            const cleanUserHis = (req.body?.userInsert || req.body?.user || req.body?.email || req.query?.user || req.headers?.['x-user'] || 'SYSTEM').toString().trim();
+            const cleanUserHis = sanitizeUsername(req.body?.userInsert || req.body?.user || req.body?.email || req.query?.user || req.headers?.['x-user'], 'SYSTEM');
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 // 0. ตรวจสอบว่าวิชานี้ถูกนำไปจัดในตารางสอน RG_SCHEDULE_CLASS แล้วหรือไม่
@@ -394,7 +413,13 @@ const CourseController = {
     // 8. ลบวิชาที่เปิดสอนทีละหลายรายการ (BULK DELETE) -> ย้ายข้อมูลเข้า RG_SCHEDULE_COURSE_HIS ก่อนลบ
     async deleteCoursesBulk(req, res) {
         try {
-            const { year, semester, courseNos } = req.body;
+            let { year, semester, courseNos, items } = req.body;
+            if ((!year || !semester || !courseNos) && Array.isArray(items) && items.length > 0) {
+                year = year || items[0].studyYear || items[0].year;
+                semester = semester || items[0].studySemester || items[0].semester;
+                courseNos = courseNos || items.map(it => it.courseNo || it.COURSE_NO);
+            }
+
             if (!year || !semester || !Array.isArray(courseNos) || courseNos.length === 0) {
                 return res.status(400).json({ success: false, message: 'กรุณาระบุปีการศึกษา ภาคการศึกษา และรายการวิชาที่ต้องการลบ' });
             }
@@ -402,19 +427,19 @@ const CourseController = {
             const cleanYear = year.toString().trim();
             const cleanSem = semester.toString().trim();
             const cleanList = Array.from(new Set(courseNos.map(c => c.toString().trim().toUpperCase()).filter(Boolean)));
-            const cleanUserHis = (req.body?.userInsert || req.body?.user || req.body?.email || req.headers?.['x-user'] || 'SYSTEM').toString().trim();
+            const cleanUserHis = sanitizeUsername(req.body?.userInsert || req.body?.userDelete || req.body?.user || req.body?.email || req.headers?.['x-user'], 'SYSTEM');
 
             let deletedCount = 0;
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 // 0. ตรวจสอบว่ามีวิชาใดในรายการถูกจัดในตารางสอน RG_SCHEDULE_CLASS แล้วหรือไม่
-                const inPlaceholders = cleanList.map((_, i) => `:${i + 3}`).join(', ');
+                const checkInPlaceholders = cleanList.map((_, i) => `:${i + 3}`).join(', ');
                 const checkBulkSql = `
                     SELECT DISTINCT UPPER(TRIM(COURSE_NO)) AS COURSE_NO
                     FROM RG_SCHEDULE_CLASS
                     WHERE TRIM(STUDY_YEAR) = :1 
                       AND TRIM(STUDY_SEMESTER) = :2
-                      AND UPPER(TRIM(COURSE_NO)) IN (${inPlaceholders})
+                      AND UPPER(TRIM(COURSE_NO)) IN (${checkInPlaceholders})
                 `;
                 const busyRows = await tx.fetchAll(checkBulkSql, [cleanYear, cleanSem, ...cleanList]);
                 const busyCourses = busyRows.map(r => r.COURSE_NO);
@@ -423,7 +448,8 @@ const CourseController = {
                     throw new Error(`ไม่สามารถลบได้ เนื่องจากมีวิชา ${busyCourses.length} วิชาถูกจัดลงในตารางสอนแล้ว: ${busyCourses.join(', ')} (กรุณาลบตารางสอนของวิชาเหล่านี้ก่อน)`);
                 }
 
-                // 1. นำข้อมูลเดิมไปบันทึกลง HIS
+                // 1. นำข้อมูลเดิมไปบันทึกลง HIS (bind :1=cleanUserHis, :2=cleanYear, :3=cleanSem, :4..=cleanList)
+                const hisInPlaceholders = cleanList.map((_, i) => `:${i + 4}`).join(', ');
                 const hisSql = `
                     INSERT INTO RG_SCHEDULE_COURSE_HIS (
                         STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
@@ -437,16 +463,17 @@ const CourseController = {
                     FROM RG_SCHEDULE_COURSE 
                     WHERE TRIM(STUDY_YEAR) = :2 
                       AND TRIM(STUDY_SEMESTER) = :3 
-                      AND UPPER(TRIM(COURSE_NO)) IN (${inPlaceholders})
+                      AND UPPER(TRIM(COURSE_NO)) IN (${hisInPlaceholders})
                 `;
                 await tx.executeOne(hisSql, [cleanUserHis, cleanYear, cleanSem, ...cleanList]);
 
-                // 2. ลบออกจาก RG_SCHEDULE_COURSE
+                // 2. ลบออกจาก RG_SCHEDULE_COURSE (bind :1=cleanYear, :2=cleanSem, :3..=cleanList)
+                const delInPlaceholders = cleanList.map((_, i) => `:${i + 3}`).join(', ');
                 const deleteSql = `
                     DELETE FROM RG_SCHEDULE_COURSE 
                     WHERE TRIM(STUDY_YEAR) = :1 
                       AND TRIM(STUDY_SEMESTER) = :2 
-                      AND UPPER(TRIM(COURSE_NO)) IN (${cleanList.map((_, i) => `:${i + 3}`).join(', ')})
+                      AND UPPER(TRIM(COURSE_NO)) IN (${delInPlaceholders})
                 `;
                 const delRes = await tx.executeOne(deleteSql, [cleanYear, cleanSem, ...cleanList]);
                 deletedCount = delRes?.rowsAffected || cleanList.length;

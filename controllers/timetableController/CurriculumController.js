@@ -3,6 +3,14 @@ const InsertModel = require('../../models/db/InsertModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
+function sanitizeUsername(raw, defaultVal = 'ADMIN') {
+    if (!raw) return defaultVal;
+    const str = raw.toString().trim();
+    if (!str) return defaultVal;
+    const name = str.split('@')[0].trim();
+    return name || defaultVal;
+}
+
 const CurriculumController = {
     // 1. ดึงรายชื่อคณะทั้งหมดจาก UGB_FACULTY
     async getFaculties(req, res) {
@@ -84,7 +92,7 @@ const CurriculumController = {
     // 4. ดึงรายการวิชาในหลักสูตรทั้งหมด (RG_SCHEDULE_CURRICULUM พร้อมข้อมูล Join)
     async listCurriculumCourses(req, res) {
         try {
-            const { facultyNo, groupNo, subGroupNo, yearLevel, semester, search } = req.query;
+            const { facultyNo, groupNo, subGroupNo, yearLevel, semester, yearEnroll, search } = req.query;
 
             let conditions = ['1=1'];
             let binds = [];
@@ -112,6 +120,11 @@ const CurriculumController = {
             if (semester && semester !== 'ALL') {
                 binds.push(semester.toString().trim());
                 conditions.push(`TRIM(c.SEMESTER) = :${binds.length}`);
+            }
+
+            if (yearEnroll && yearEnroll !== 'ALL') {
+                binds.push(yearEnroll.toString().trim());
+                conditions.push(`TRIM(c.YEAR_ENROLL) = :${binds.length}`);
             }
 
             if (search && search.toString().trim()) {
@@ -178,16 +191,25 @@ const CurriculumController = {
     // 5. เพิ่มวิชาในหลักสูตร (ADD / BULK ADD พร้อมเช็คการบันทึกซ้ำ)
     async addCurriculumCourses(req, res) {
         try {
-            const { facultyNo, groupNo, subGroupNo, yearLevel, semester, yearEnroll, courseNos } = req.body;
+            const { facultyNo, groupNo, subGroupNo, yearLevel, semester, yearEnroll, userInsert, courseNos } = req.body;
 
-            if (!facultyNo || !groupNo || !yearLevel || !semester) {
+            if (!facultyNo || !groupNo || !yearLevel || !semester || !yearEnroll) {
                 return res.status(400).json({
                     success: false,
-                    message: 'กรุณากรอกข้อมูลคณะ, กลุ่มวิชา, ชั้นปี และภาคการศึกษาให้ครบถ้วน'
+                    message: 'กรุณากรอกข้อมูลคณะ, กลุ่มวิชา, ชั้นปี, ภาคการศึกษา และปีที่สมัครให้ครบถ้วน'
                 });
             }
 
-            if (!Array.isArray(courseNos) || courseNos.length === 0) {
+            const cleanYearEnroll = yearEnroll.toString().trim().substring(0, 2);
+            if (!/^\d{2}$/.test(cleanYearEnroll)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'ปีที่สมัครต้องเป็นตัวเลข 2 หลัก (เช่น 65, 66)'
+                });
+            }
+
+            const rawCourses = Array.isArray(courseNos) ? courseNos : (courseNos ? [courseNos] : []);
+            if (rawCourses.length === 0) {
                 return res.status(400).json({
                     success: false,
                     message: 'กรุณาระบุรายวิชาที่ต้องการเพิ่มอย่างน้อย 1 วิชา'
@@ -199,7 +221,7 @@ const CurriculumController = {
             const cleanSubGrp = (subGroupNo && subGroupNo.toString().trim()) ? subGroupNo.toString().trim() : '00';
             const cleanYearLevel = yearLevel.toString().trim().substring(0, 1);
             const cleanSemester = semester.toString().trim().substring(0, 1);
-            const cleanYearEnroll = (yearEnroll && yearEnroll.toString().trim()) ? yearEnroll.toString().trim().substring(0, 2) : null;
+            const cleanUser = sanitizeUsername(userInsert || req.body?.user || req.body?.email, 'ADMIN');
             const coursesToAdd = Array.from(new Set(rawCourses.map(c => c.toString().trim().toUpperCase()).filter(Boolean)));
             let addedCount = 0;
             let skippedCount = 0;
@@ -208,7 +230,7 @@ const CurriculumController = {
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 for (const cleanCourse of coursesToAdd) {
-                    // ตรวจสอบว่าวิชานี้มีอยู่ในหลักสูตรนี้แล้วหรือไม่
+                    // ตรวจสอบว่าวิชานี้มีอยู่ในหลักสูตรนี้แล้วหรือไม่ (ตามชั้นปี ภาค และปีที่สมัคร)
                     const checkSql = `
                         SELECT COUNT(*) AS CNT 
                         FROM RG_SCHEDULE_CURRICULUM 
@@ -218,6 +240,7 @@ const CurriculumController = {
                           AND TRIM(YEAR_LEVEL) = :4 
                           AND TRIM(SEMESTER) = :5 
                           AND UPPER(TRIM(COURSE_NO)) = :6
+                          AND ( (:7 IS NULL AND YEAR_ENROLL IS NULL) OR TRIM(YEAR_ENROLL) = :7 )
                     `;
                     const checkRes = await tx.fetchOne(checkSql, [
                         cleanFac,
@@ -225,7 +248,8 @@ const CurriculumController = {
                         cleanSubGrp,
                         cleanYearLevel,
                         cleanSemester,
-                        cleanCourse
+                        cleanCourse,
+                        cleanYearEnroll
                     ]);
 
                     const cnt = Number(checkRes?.CNT || 0);
@@ -239,8 +263,8 @@ const CurriculumController = {
                     // บันทึกลงตาราง RG_SCHEDULE_CURRICULUM
                     const insertSql = `
                         INSERT INTO RG_SCHEDULE_CURRICULUM 
-                        (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL)
-                        VALUES (:1, :2, :3, :4, :5, :6, :7)
+                        (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, USER_INSERT)
+                        VALUES (:1, :2, :3, :4, :5, :6, :7, SYSDATE, :8)
                     `;
                     await tx.executeOne(insertSql, [
                         cleanFac,
@@ -249,7 +273,8 @@ const CurriculumController = {
                         cleanYearLevel,
                         cleanSemester,
                         cleanCourse,
-                        cleanYearEnroll
+                        cleanYearEnroll,
+                        cleanUser
                     ]);
 
                     addedCount++;
@@ -283,7 +308,7 @@ const CurriculumController = {
     // 6. ลบวิชาในหลักสูตร (DELETE -> ย้ายเข้า RG_SCHEDULE_CURRICULUM_HIS ก่อนลบ)
     async deleteCurriculumCourse(req, res) {
         try {
-            const { facultyNo, groupNo, subGroupNo, yearLevel, semester, courseNo } = req.body;
+            const { facultyNo, groupNo, subGroupNo, yearLevel, semester, yearEnroll, courseNo, userDelete } = req.body;
 
             if (!facultyNo || !groupNo || !yearLevel || !semester || !courseNo) {
                 return res.status(400).json({ success: false, message: 'กรุณาระบุข้อมูลวิชาที่ต้องการลบให้ครบถ้วน' });
@@ -295,31 +320,33 @@ const CurriculumController = {
             const cleanYearLevel = yearLevel.toString().trim().substring(0, 1);
             const cleanSemester = semester.toString().trim().substring(0, 1);
             const cleanCourse = courseNo.toString().trim().toUpperCase();
+            const cleanYearEnroll = (yearEnroll && yearEnroll.toString().trim()) ? yearEnroll.toString().trim().substring(0, 2) : null;
+            const cleanUserHis = sanitizeUsername(userDelete || req.body?.userInsert || req.body?.user, 'ADMIN');
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 1. สำรองข้อมูลเข้า RG_SCHEDULE_CURRICULUM_HIS พร้อม INSERT_DATE = SYSDATE
                 const archiveSql = `
                     INSERT INTO RG_SCHEDULE_CURRICULUM_HIS 
-                    (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE)
-                    SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, SYSDATE
+                    (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS)
+                    SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, SYSDATE, USER_INSERT, :1
                     FROM RG_SCHEDULE_CURRICULUM
-                    WHERE TRIM(FACULTY_NO) = :1 
-                      AND TRIM(GROUP_NO) = :2 
-                      AND NVL(TRIM(SUB_GROUP_NO), '00') = :3 
-                      AND TRIM(YEAR_LEVEL) = :4 
-                      AND TRIM(SEMESTER) = :5 
-                      AND UPPER(TRIM(COURSE_NO)) = :6
+                    WHERE TRIM(FACULTY_NO) = :2 
+                      AND TRIM(GROUP_NO) = :3 
+                      AND NVL(TRIM(SUB_GROUP_NO), '00') = :4 
+                      AND TRIM(YEAR_LEVEL) = :5 
+                      AND TRIM(SEMESTER) = :6 
+                      AND UPPER(TRIM(COURSE_NO)) = :7
+                      AND ( (:8 IS NULL AND YEAR_ENROLL IS NULL) OR TRIM(YEAR_ENROLL) = :8 )
                 `;
                 await tx.executeOne(archiveSql, [
+                    cleanUserHis,
                     cleanFac,
                     cleanGrp,
                     cleanSubGrp,
                     cleanYearLevel,
                     cleanSemester,
-                    cleanCourse
+                    cleanCourse,
+                    cleanYearEnroll
                 ]);
-
-                // 2. ลบออกจาก RG_SCHEDULE_CURRICULUM
                 const deleteSql = `
                     DELETE FROM RG_SCHEDULE_CURRICULUM 
                     WHERE TRIM(FACULTY_NO) = :1 
@@ -328,6 +355,7 @@ const CurriculumController = {
                       AND TRIM(YEAR_LEVEL) = :4 
                       AND TRIM(SEMESTER) = :5 
                       AND UPPER(TRIM(COURSE_NO)) = :6
+                      AND ( (:7 IS NULL AND YEAR_ENROLL IS NULL) OR TRIM(YEAR_ENROLL) = :7 )
                 `;
                 await tx.executeOne(deleteSql, [
                     cleanFac,
@@ -335,7 +363,8 @@ const CurriculumController = {
                     cleanSubGrp,
                     cleanYearLevel,
                     cleanSemester,
-                    cleanCourse
+                    cleanCourse,
+                    cleanYearEnroll
                 ]);
             });
 
@@ -352,11 +381,12 @@ const CurriculumController = {
     // 7. ลบหลายวิชาในหลักสูตรพร้อมกัน (BULK DELETE)
     async deleteCurriculumBulk(req, res) {
         try {
-            const { items } = req.body;
+            const { items, userDelete } = req.body;
             if (!Array.isArray(items) || items.length === 0) {
                 return res.status(400).json({ success: false, message: 'กรุณาระบุรายการวิชาที่ต้องการลบ' });
             }
 
+            const cleanUserHis = sanitizeUsername(userDelete || req.body?.userInsert || req.body?.user, 'ADMIN');
             let deletedCount = 0;
 
             await DbTxModel.withTransaction(async (conn, tx) => {
@@ -367,29 +397,33 @@ const CurriculumController = {
                     const cleanYearLevel = item.yearLevel ? item.yearLevel.toString().trim().substring(0, 1) : '';
                     const cleanSemester = item.semester ? item.semester.toString().trim().substring(0, 1) : '';
                     const cleanCourse = item.courseNo ? item.courseNo.toString().trim().toUpperCase() : '';
+                    const cleanYearEnroll = (item.yearEnroll && item.yearEnroll.toString().trim()) ? item.yearEnroll.toString().trim().substring(0, 2) : null;
 
                     if (!cleanFac || !cleanGrp || !cleanCourse) continue;
 
                     // 1. สำรองข้อมูลเข้า HIS
                     const archiveSql = `
                         INSERT INTO RG_SCHEDULE_CURRICULUM_HIS 
-                        (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE)
-                        SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, SYSDATE
+                        (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS)
+                        SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, SYSDATE, USER_INSERT, :1
                         FROM RG_SCHEDULE_CURRICULUM
-                        WHERE TRIM(FACULTY_NO) = :1 
-                          AND TRIM(GROUP_NO) = :2 
-                          AND NVL(TRIM(SUB_GROUP_NO), '00') = :3 
-                          AND TRIM(YEAR_LEVEL) = :4 
-                          AND TRIM(SEMESTER) = :5 
-                          AND UPPER(TRIM(COURSE_NO)) = :6
+                        WHERE TRIM(FACULTY_NO) = :2 
+                          AND TRIM(GROUP_NO) = :3 
+                          AND NVL(TRIM(SUB_GROUP_NO), '00') = :4 
+                          AND TRIM(YEAR_LEVEL) = :5 
+                          AND TRIM(SEMESTER) = :6 
+                          AND UPPER(TRIM(COURSE_NO)) = :7
+                          AND ( (:8 IS NULL AND YEAR_ENROLL IS NULL) OR TRIM(YEAR_ENROLL) = :8 )
                     `;
                     await tx.executeOne(archiveSql, [
+                        cleanUserHis,
                         cleanFac,
                         cleanGrp,
                         cleanSubGrp,
                         cleanYearLevel,
                         cleanSemester,
-                        cleanCourse
+                        cleanCourse,
+                        cleanYearEnroll
                     ]);
 
                     // 2. ลบออกจากตารางหลัก
@@ -401,6 +435,7 @@ const CurriculumController = {
                           AND TRIM(YEAR_LEVEL) = :4 
                           AND TRIM(SEMESTER) = :5 
                           AND UPPER(TRIM(COURSE_NO)) = :6
+                          AND ( (:7 IS NULL AND YEAR_ENROLL IS NULL) OR TRIM(YEAR_ENROLL) = :7 )
                     `;
                     await tx.executeOne(deleteSql, [
                         cleanFac,
@@ -408,7 +443,8 @@ const CurriculumController = {
                         cleanSubGrp,
                         cleanYearLevel,
                         cleanSemester,
-                        cleanCourse
+                        cleanCourse,
+                        cleanYearEnroll
                     ]);
 
                     deletedCount++;

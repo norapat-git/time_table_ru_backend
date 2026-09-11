@@ -1,6 +1,30 @@
 const SelectModel = require('../../models/db/SelectModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
+function formatMilitaryTime(t) {
+    if (!t) return '';
+    const str = t.toString().trim().padStart(4, '0');
+    return `${str.slice(0, 2)}:${str.slice(2, 4)}`;
+}
+
+function isTimeOverlapping(startA, endA, startB, endB) {
+    if (!startA || !endA || !startB || !endB) return false;
+    const aS = parseInt(startA.toString().trim(), 10);
+    const aE = parseInt(endA.toString().trim(), 10);
+    const bS = parseInt(startB.toString().trim(), 10);
+    const bE = parseInt(endB.toString().trim(), 10);
+    if (isNaN(aS) || isNaN(aE) || isNaN(bS) || isNaN(bE)) return false;
+    return aS < bE && aE > bS;
+}
+
+function sanitizeUsername(raw, defaultVal = 'ADMIN') {
+    if (!raw) return defaultVal;
+    const str = raw.toString().trim();
+    if (!str) return defaultVal;
+    const name = str.split('@')[0].trim();
+    return name || defaultVal;
+}
+
 /**
  * TimetableCrudController
  * รับผิดชอบ: เพิ่ม / แก้ไข / ลบ / ย้ายคาบตารางสอน
@@ -35,7 +59,7 @@ const TimetableCrudController = {
             const cleanCourseNo = courseNo.toString().trim().toUpperCase();
             const cleanDay = Number(dayCode);
             const cleanRoom = (roomCode || '').toString().trim();
-            const user = userInsert || 'ADMIN';
+            const user = sanitizeUsername(userInsert, 'ADMIN');
 
             // 1. ตรวจสอบการชนของห้องเรียน (Room Collision Check) สำหรับทุกคาบที่เลือก
             if (cleanRoom && cleanRoom !== '-') {
@@ -114,34 +138,101 @@ const TimetableCrudController = {
             const rawCodes = Array.isArray(instructorCodes) ? instructorCodes : [];
             const uniqueCodes = Array.from(new Set(rawCodes.map((c) => (c || '').toString().trim()).filter(Boolean))).sort();
 
-            // 3. ตรวจสอบว่าอาจารย์สามารถมาสอนในวันและเวลานี้ได้หรือไม่ (RU30 Teaching Slot Validation)
+            // 3. ตรวจสอบว่าอาจารย์ติดสอนในระบบส่วนกลาง มร.30 หรือไม่ (RU30 Collision Check)
             if (uniqueCodes.length > 0) {
-                for (const code of uniqueCodes) {
-                    const ru30Sql = `
-                        SELECT ru.DAY_CODE, ru.TIME_CODE, TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI
-                        FROM UGB_RU30 ru
-                        LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
-                        WHERE TRIM(ru.INSTRUCTOR_CODE) = :1
-                          AND ru.DAY_CODE IS NOT NULL 
-                          AND ru.TIME_CODE IS NOT NULL
+                const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
+                const timeFlag = isSummer ? '2' : '1';
+                let targetSlotTimes = [];
+                try {
+                    const inTimeP = targetTimeCodes.map((_, i) => `:${i + 2}`).join(', ');
+                    const timeSql = `
+                        SELECT TRIM(TIME_CODE) AS TIME_CODE, TRIM(TIME_START) AS TIME_START, TRIM(TIME_END) AS TIME_END
+                        FROM RG_SCHEDULE_TIME
+                        WHERE TRIM(TIME_FLAG) = :1 AND TRIM(TIME_CODE) IN (${inTimeP})
                     `;
-                    const ru30Res = await SelectModel.findAll(res, ru30Sql, [code]);
-                    const ru30Slots = ru30Res.rows || [];
+                    const timeRes = await SelectModel.findAll(res, timeSql, [timeFlag, ...targetTimeCodes.map(String)]);
+                    targetSlotTimes = (timeRes?.rows || []).map(r => ({
+                        timeCode: Number(r.TIME_CODE),
+                        timeStart: r.TIME_START,
+                        timeEnd: r.TIME_END
+                    }));
+                } catch (tErr) {
+                    console.error('[addScheduleClass timeSql error]', tErr);
+                }
 
-                    if (ru30Slots.length > 0) {
-                        for (const cleanTime of targetTimeCodes) {
-                            const hasMatchingSlot = ru30Slots.some(
-                                (s) => Number(s.DAY_CODE) === cleanDay && Number(s.TIME_CODE) === cleanTime
-                            );
-                            if (!hasMatchingSlot) {
-                                const instName = ru30Slots[0].INSTRUCTOR_NAME_THAI || code;
+                if (targetSlotTimes.length === 0) {
+                    const defaultTimes = timeFlag === '2'
+                        ? { 1: ['0835', '0950'], 2: ['0955', '1110'], 3: ['1115', '1230'], 4: ['1235', '1350'], 5: ['1355', '1510'] }
+                        : { 1: ['0800', '0915'], 2: ['0925', '1040'], 3: ['1050', '1205'], 4: ['1215', '1330'], 5: ['1340', '1455'], 6: ['1505', '1620'] };
+                    targetSlotTimes = targetTimeCodes.map(t => ({
+                        timeCode: t,
+                        timeStart: defaultTimes[t] ? defaultTimes[t][0] : '0800',
+                        timeEnd: defaultTimes[t] ? defaultTimes[t][1] : '0915'
+                    }));
+                }
+
+                try {
+                    const inInstP = uniqueCodes.map((_, i) => `:${i + 4}`).join(', ');
+                    const ru30Sql = `
+                        SELECT 
+                            TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                            TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                            TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
+                            ru.DAY_CODE,
+                            TRIM(ts.TIME_START) AS RU30_START,
+                            TRIM(ts.TIME_END) AS RU30_END,
+                            TRIM(ru.COURSE_NO) AS RU30_COURSE_NO
+                        FROM UGB_RU30 ru
+                        LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
+                        LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                        LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                        WHERE TRIM(ru.STUDY_YEAR) = :1 
+                          AND TRIM(ru.STUDY_SEMESTER) = :2
+                          AND ru.DAY_CODE = :3
+                          AND TRIM(ru.INSTRUCTOR_CODE) IN (${inInstP})
+                    `;
+                    let ru30Res = await SelectModel.findAll(res, ru30Sql, [cleanYear, cleanSem, cleanDay, ...uniqueCodes]);
+                    let ru30Rows = ru30Res?.rows || [];
+
+                    if (ru30Rows.length === 0) {
+                        const fbInInstP = uniqueCodes.map((_, i) => `:${i + 2}`).join(', ');
+                        const fbSql = `
+                            SELECT 
+                                TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                                TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                                TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
+                                ru.DAY_CODE,
+                                TRIM(ts.TIME_START) AS RU30_START,
+                                TRIM(ts.TIME_END) AS RU30_END,
+                                TRIM(ru.COURSE_NO) AS RU30_COURSE_NO
+                            FROM UGB_RU30 ru
+                            LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
+                            LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                            LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                            WHERE ru.DAY_CODE = :1
+                              AND TRIM(ru.INSTRUCTOR_CODE) IN (${fbInInstP})
+                        `;
+                        const fbRes = await SelectModel.findAll(res, fbSql, [cleanDay, ...uniqueCodes]);
+                        ru30Rows = fbRes?.rows || [];
+                    }
+
+                    for (const r of ru30Rows) {
+                        for (const slot of targetSlotTimes) {
+                            if (isTimeOverlapping(slot.timeStart, slot.timeEnd, r.RU30_START, r.RU30_END)) {
+                                const instName = `${r.RANK_NAME_THAI_S || ''} ${r.INSTRUCTOR_NAME_THAI || r.INSTRUCTOR_CODE}`.trim();
+                                const ruPeriod = (r.RU30_START && r.RU30_END)
+                                    ? `${formatMilitaryTime(r.RU30_START)} - ${formatMilitaryTime(r.RU30_END)}`
+                                    : '';
+                                const slotPeriod = `${formatMilitaryTime(slot.timeStart)} - ${formatMilitaryTime(slot.timeEnd)}`;
                                 return res.status(400).json({
                                     success: false,
-                                    message: `อาจารย์ ${instName} (${code}) ไม่สามารถสอนในวันดังกล่าว คาบที่ ${cleanTime} ได้ (ไม่อยู่ในวันและเวลาว่างของอาจารย์ตาม มร.30)`,
+                                    message: `อาจารย์ ${instName} (${r.INSTRUCTOR_CODE}) ติดสอนในระบบส่วนกลาง (มร.30) วิชา ${r.RU30_COURSE_NO} เวลา ${ruPeriod} ซึ่งชนกับคาบที่ ${slot.timeCode} (${slotPeriod})`,
                                 });
                             }
                         }
                     }
+                } catch (ru30Err) {
+                    console.error('[addScheduleClass ru30 error]', ru30Err);
                 }
             }
 
@@ -342,7 +433,7 @@ const TimetableCrudController = {
             const cleanCourseNo = courseNo.toString().trim().toUpperCase();
             const cleanDay = Number(dayCode);
             const cleanRoom = roomCode.toString().trim();
-            const user = userInsert || 'ADMIN';
+            const user = sanitizeUsername(userInsert, 'ADMIN');
 
             // 1. ตรวจสอบการชนของห้องเรียน (Room Collision Check) สำหรับทุกคาบที่เลือก
             if (cleanRoom && cleanRoom !== '-') {
@@ -592,7 +683,7 @@ const TimetableCrudController = {
             const cleanDay = (dayCode !== undefined && dayCode !== null && dayCode !== '') ? Number(dayCode) : null;
             const cleanTime = (timeCode !== undefined && timeCode !== null && timeCode !== '') ? Number(timeCode) : null;
             const cleanRoom = (roomCode !== undefined && roomCode !== null && roomCode !== '') ? roomCode.toString().trim() : null;
-            const user = userInsert || 'ADMIN';
+            const user = sanitizeUsername(userInsert, 'ADMIN');
 
             // จัดการคาบเรียน (รองรับทั้ง timeCodes array และ timeCode เดี่ยว)
             let targetTimeList = [];
@@ -626,9 +717,11 @@ const TimetableCrudController = {
                         pIdx += targetTimeList.length;
                     }
                 }
-                if (cleanRoom) {
+                if (cleanRoom && cleanRoom !== '-') {
                     whereClause += ` AND UPPER(TRIM(ROOM_CODE)) = UPPER(TRIM(:${pIdx++}))`;
                     filterParams.push(cleanRoom);
+                } else if (cleanRoom === '-') {
+                    whereClause += ` AND (ROOM_CODE IS NULL OR TRIM(ROOM_CODE) = '-' OR TRIM(ROOM_CODE) = '')`;
                 }
                 if (cleanGroup !== null && !isNaN(cleanGroup)) {
                     whereClause += ` AND INSTR_GROUP = :${pIdx++}`;
@@ -652,6 +745,7 @@ const TimetableCrudController = {
                 }
 
                 // 1. สำรอง RG_SCHEDULE_CLASS -> RG_SCHEDULE_CLASS_HIS
+                const hisWhereClause = whereClause.replace(/:(\d+)/g, (_, num) => `:${Number(num) + 1}`);
                 const hisClassSql = `
                     INSERT INTO RG_SCHEDULE_CLASS_HIS (
                         STUDY_YEAR,
@@ -679,7 +773,7 @@ const TimetableCrudController = {
                         USER_INSERT,
                         :1
                     FROM RG_SCHEDULE_CLASS
-                    ${whereClause}
+                    ${hisWhereClause}
                 `;
                 await tx.executeOne(hisClassSql, [user, ...filterParams]);
 
@@ -786,7 +880,7 @@ const TimetableCrudController = {
 
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
-            const user = userInsert || 'ADMIN';
+            const user = sanitizeUsername(userInsert, 'ADMIN');
             let deletedCount = 0;
 
             await DbTxModel.withTransaction(async (conn, tx) => {
@@ -814,9 +908,11 @@ const TimetableCrudController = {
                         whereClause += ` AND TIME_CODE = :${pIdx++}`;
                         filterParams.push(cleanTime);
                     }
-                    if (cleanRoom) {
+                    if (cleanRoom && cleanRoom !== '-') {
                         whereClause += ` AND UPPER(TRIM(ROOM_CODE)) = UPPER(TRIM(:${pIdx++}))`;
                         filterParams.push(cleanRoom);
+                    } else if (cleanRoom === '-') {
+                        whereClause += ` AND (ROOM_CODE IS NULL OR TRIM(ROOM_CODE) = '-' OR TRIM(ROOM_CODE) = '')`;
                     }
                     if (cleanGroup !== null && !isNaN(cleanGroup)) {
                         whereClause += ` AND INSTR_GROUP = :${pIdx++}`;
@@ -824,6 +920,7 @@ const TimetableCrudController = {
                     }
 
                     // 1. สำรอง RG_SCHEDULE_CLASS_HIS
+                    const hisWhereClause = whereClause.replace(/:(\d+)/g, (_, num) => `:${Number(num) + 1}`);
                     const hisClassSql = `
                         INSERT INTO RG_SCHEDULE_CLASS_HIS (
                             STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, DAY_CODE, TIME_CODE, ROOM_CODE, INSTR_GROUP,
@@ -833,7 +930,7 @@ const TimetableCrudController = {
                             STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, DAY_CODE, TIME_CODE, ROOM_CODE, INSTR_GROUP,
                             INSERT_DATE, SYSDATE, USER_INSERT, :1
                         FROM RG_SCHEDULE_CLASS
-                        ${whereClause}
+                        ${hisWhereClause}
                     `;
                     await tx.executeOne(hisClassSql, [user, ...filterParams]);
 
@@ -915,7 +1012,7 @@ const TimetableCrudController = {
 
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
-            const user = userInsert || 'ADMIN';
+            const user = sanitizeUsername(userInsert, 'ADMIN');
             let updatedCount = 0;
 
             await DbTxModel.withTransaction(async (conn, tx) => {
@@ -1029,31 +1126,97 @@ const TimetableCrudController = {
                         new Set(instructorsOfClass.map((i) => (i.INSTRUCTOR_CODE || '').trim()).filter(Boolean))
                     );
 
-                    // 1. ตรวจสอบเวลาว่างของอาจารย์ตาม มร.30 (RU30 Teaching Slot Validation)
+                    // 1. ตรวจสอบว่าอาจารย์ติดสอนในระบบส่วนกลาง (มร.30 Collision Check)
                     if (uniqueTeacherCodes.length > 0) {
-                        for (const code of uniqueTeacherCodes) {
-                            const ru30Sql = `
-                                SELECT ru.DAY_CODE, ru.TIME_CODE, TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI
-                                FROM UGB_RU30 ru
-                                LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
-                                WHERE TRIM(ru.INSTRUCTOR_CODE) = :1
-                                  AND ru.DAY_CODE IS NOT NULL 
-                                  AND ru.TIME_CODE IS NOT NULL
-                                  AND ru.DAY_CODE != 0
-                                  AND ru.TIME_CODE != 0
+                        const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
+                        const timeFlag = isSummer ? '2' : '1';
+                        let targetSlotTime = null;
+                        try {
+                            const timeSql = `
+                                SELECT TRIM(TIME_CODE) AS TIME_CODE, TRIM(TIME_START) AS TIME_START, TRIM(TIME_END) AS TIME_END
+                                FROM RG_SCHEDULE_TIME
+                                WHERE TRIM(TIME_FLAG) = :1 AND TRIM(TIME_CODE) = :2
                             `;
-                            const ru30Slots = await tx.fetchAll(ru30Sql, [code]);
+                            const timeRes = await tx.fetchAll(timeSql, [timeFlag, newTime.toString()]);
+                            if (timeRes && timeRes.length > 0) {
+                                targetSlotTime = {
+                                    timeCode: Number(timeRes[0].TIME_CODE),
+                                    timeStart: timeRes[0].TIME_START,
+                                    timeEnd: timeRes[0].TIME_END
+                                };
+                            }
+                        } catch (tErr) {
+                            console.error('[moveClassSlot timeSql error]', tErr);
+                        }
 
-                            if (ru30Slots.length > 0) {
-                                const hasMatchingSlot = ru30Slots.some(
-                                    (s) => Number(s.DAY_CODE) === newDay && Number(s.TIME_CODE) === newTime
-                                );
-                                if (!hasMatchingSlot) {
-                                    const instObj = instructorsOfClass.find((x) => (x.INSTRUCTOR_CODE || '').trim() === code);
-                                    const instName = instObj?.INSTRUCTOR_NAME_THAI || ru30Slots[0]?.INSTRUCTOR_NAME_THAI || code;
-                                    throw new Error(`ไม่สามารถย้ายวิชา ${courseNo} ได้ เนื่องจากอาจารย์ ${instName} (${code}) ไม่สามารถสอนในวันดังกล่าว คาบที่ ${newTime} ได้ (ไม่อยู่ในวันและเวลาว่างของอาจารย์ตาม มร.30)`);
+                        if (!targetSlotTime) {
+                            const defaultTimes = timeFlag === '2'
+                                ? { 1: ['0835', '0950'], 2: ['0955', '1110'], 3: ['1115', '1230'], 4: ['1235', '1350'], 5: ['1355', '1510'] }
+                                : { 1: ['0800', '0915'], 2: ['0925', '1040'], 3: ['1050', '1205'], 4: ['1215', '1330'], 5: ['1340', '1455'], 6: ['1505', '1620'] };
+                            targetSlotTime = {
+                                timeCode: newTime,
+                                timeStart: defaultTimes[newTime] ? defaultTimes[newTime][0] : '0800',
+                                timeEnd: defaultTimes[newTime] ? defaultTimes[newTime][1] : '0915'
+                            };
+                        }
+
+                        try {
+                            const inInstP = uniqueTeacherCodes.map((_, i) => `:${i + 4}`).join(', ');
+                            const ru30Sql = `
+                                SELECT 
+                                    TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                                    TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                                    TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
+                                    ru.DAY_CODE,
+                                    TRIM(ts.TIME_START) AS RU30_START,
+                                    TRIM(ts.TIME_END) AS RU30_END,
+                                    TRIM(ru.COURSE_NO) AS RU30_COURSE_NO
+                                FROM UGB_RU30 ru
+                                LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
+                                LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                                LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                                WHERE TRIM(ru.STUDY_YEAR) = :1 
+                                  AND TRIM(ru.STUDY_SEMESTER) = :2
+                                  AND ru.DAY_CODE = :3
+                                  AND TRIM(ru.INSTRUCTOR_CODE) IN (${inInstP})
+                            `;
+                            let ru30Rows = await tx.fetchAll(ru30Sql, [cleanYear, cleanSem, newDay, ...uniqueTeacherCodes]);
+                            if (!ru30Rows || ru30Rows.length === 0) {
+                                const fbInInstP = uniqueTeacherCodes.map((_, i) => `:${i + 2}`).join(', ');
+                                const fbSql = `
+                                    SELECT 
+                                        TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                                        TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                                        TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
+                                        ru.DAY_CODE,
+                                        TRIM(ts.TIME_START) AS RU30_START,
+                                        TRIM(ts.TIME_END) AS RU30_END,
+                                        TRIM(ru.COURSE_NO) AS RU30_COURSE_NO
+                                    FROM UGB_RU30 ru
+                                    LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
+                                    LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                                    LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                                    WHERE ru.DAY_CODE = :1
+                                      AND TRIM(ru.INSTRUCTOR_CODE) IN (${fbInInstP})
+                                `;
+                                ru30Rows = await tx.fetchAll(fbSql, [newDay, ...uniqueTeacherCodes]);
+                            }
+
+                            for (const r of (ru30Rows || [])) {
+                                if (isTimeOverlapping(targetSlotTime.timeStart, targetSlotTime.timeEnd, r.RU30_START, r.RU30_END)) {
+                                    const instName = `${r.RANK_NAME_THAI_S || ''} ${r.INSTRUCTOR_NAME_THAI || r.INSTRUCTOR_CODE}`.trim();
+                                    const ruPeriod = (r.RU30_START && r.RU30_END)
+                                        ? `${formatMilitaryTime(r.RU30_START)} - ${formatMilitaryTime(r.RU30_END)}`
+                                        : '';
+                                    const slotPeriod = `${formatMilitaryTime(targetSlotTime.timeStart)} - ${formatMilitaryTime(targetSlotTime.timeEnd)}`;
+                                    throw new Error(`ไม่สามารถย้ายวิชา ${courseNo} ได้ เนื่องจากอาจารย์ ${instName} (${r.INSTRUCTOR_CODE}) ติดสอนในระบบส่วนกลาง (มร.30) วิชา ${r.RU30_COURSE_NO} เวลา ${ruPeriod} ซึ่งชนกับคาบที่ ${newTime} (${slotPeriod})`);
                                 }
                             }
+                        } catch (ruErr) {
+                            if (ruErr.message && ruErr.message.includes('ติดสอนในระบบส่วนกลาง')) {
+                                throw ruErr;
+                            }
+                            console.error('[moveClassSlot ru30 error]', ruErr);
                         }
                     }
 

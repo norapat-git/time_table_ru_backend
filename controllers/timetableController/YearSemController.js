@@ -4,6 +4,14 @@ const UpdateModel = require('../../models/db/UpDateModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
+function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
+    if (!raw) return defaultVal;
+    const str = raw.toString().trim();
+    if (!str) return defaultVal;
+    const name = str.split('@')[0].trim();
+    return name || defaultVal;
+}
+
 const YearSemController = {
     // 1. ดึงรายการปีภาคทั้งหมด (LIST)
     async listYearSem(req, res) {
@@ -61,7 +69,7 @@ const YearSemController = {
 
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
-            const cleanUser = (userInsert || req.body.user || req.body.email || 'SYSTEM').toString().trim();
+            const cleanUser = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
             const yearNum = parseInt(cleanYear, 10);
 
             // ตรวจสอบปีการศึกษาต้องไม่น้อยกว่า 2550
@@ -72,11 +80,11 @@ const YearSemController = {
                 });
             }
 
-            // ตรวจสอบภาคการศึกษา (เฉพาะภาค 1 และ ภาค 2)
-            if (!['1', '2'].includes(cleanSem)) {
+            // ตรวจสอบภาคการศึกษา (ภาค 1, ภาค 2 และ ภาค 3 / ภาคฤดูร้อน)
+            if (!['1', '2', '3'].includes(cleanSem)) {
                 return res.status(400).json({
                     success: false,
-                    message: 'ภาคการศึกษาต้องเป็นภาค 1 หรือภาค 2 เท่านั้น'
+                    message: 'ภาคการศึกษาต้องเป็นภาค 1, ภาค 2 หรือภาค 3 (ภาคฤดูร้อน) เท่านั้น'
                 });
             }
 
@@ -130,7 +138,7 @@ const YearSemController = {
             const oSem = oldSemester.toString().trim();
             const nYear = newYear.toString().trim();
             const nSem = newSemester.toString().trim();
-            const cleanUser = (userInsert || req.body.user || req.body.email || 'SYSTEM').toString().trim();
+            const cleanUser = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
             const yearNum = parseInt(nYear, 10);
 
             // ตรวจสอบปีการศึกษาใหม่ต้องไม่น้อยกว่า 2550
@@ -141,11 +149,11 @@ const YearSemController = {
                 });
             }
 
-            // ตรวจสอบภาคการศึกษา (เฉพาะภาค 1 และ ภาค 2)
-            if (!['1', '2'].includes(nSem)) {
+            // ตรวจสอบภาคการศึกษา (ภาค 1, ภาค 2 และ ภาค 3 / ภาคฤดูร้อน)
+            if (!['1', '2', '3'].includes(nSem)) {
                 return res.status(400).json({
                     success: false,
-                    message: 'ภาคการศึกษาต้องเป็นภาค 1 หรือภาค 2 เท่านั้น'
+                    message: 'ภาคการศึกษาต้องเป็นภาค 1, ภาค 2 หรือภาค 3 (ภาคฤดูร้อน) เท่านั้น'
                 });
             }
 
@@ -239,9 +247,20 @@ const YearSemController = {
 
             const cleanYear = year.toString().trim();
             const cleanSem = semester.toString().trim();
-            const cleanUser = (req.body?.userInsert || req.query?.userInsert || 'ADMIN').toString().trim();
+            const cleanUser = sanitizeUsername(req.body?.userInsert || req.query?.userInsert, 'ADMIN');
 
             await DbTxModel.withTransaction(async (conn, tx) => {
+                // 0. ตรวจสอบว่าปีภาคนี้ตั้งเป็นปีภาคปัจจุบัน (STUDY_ACTIVE = '1') หรือไม่
+                const checkActiveSql = `
+                    SELECT TRIM(NVL(STUDY_ACTIVE, '0')) AS STUDY_ACTIVE 
+                    FROM RG_SCHEDULE_YEARSEM 
+                    WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
+                `;
+                const checkResult = await tx.fetchAll(checkActiveSql, [cleanYear, cleanSem]);
+                if (checkResult && checkResult.length > 0 && checkResult[0].STUDY_ACTIVE === '1') {
+                    throw new Error('ไม่สามารถลบปีการศึกษาและภาคเรียนที่ตั้งเป็นปัจจุบันได้ กรุณาเปลี่ยนปีภาคปัจจุบันเป็นอันอื่นก่อน');
+                }
+
                 // 1. สำรองข้อมูลตารางสอน RG_SCHEDULE_CLASS -> RG_SCHEDULE_CLASS_HIS
                 const archiveClassSql = `
                     INSERT INTO RG_SCHEDULE_CLASS_HIS (
@@ -360,7 +379,7 @@ const YearSemController = {
             });
         } catch (error) {
             console.error('[YearSemController.deleteYearSem error]', error);
-            return res.status(500).json({ success: false, message: error.message });
+            return res.status(400).json({ success: false, message: error.message });
         }
     }
 };

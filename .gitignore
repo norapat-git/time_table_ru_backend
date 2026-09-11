@@ -76,3 +76,5 @@ __MACOSX/
 controllers/db/*.md
 **/db/*.md
 
+/teach.md
+.md

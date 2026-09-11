@@ -1,6 +1,20 @@
 const SelectModel = require('../../models/db/SelectModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
+function formatMilitaryTime(t) {
+    if (!t) return '';
+    const str = t.toString().trim().padStart(4, '0');
+    return `${str.slice(0, 2)}:${str.slice(2, 4)}`;
+}
+
+function sanitizeUsername(raw, defaultVal = 'ADMIN') {
+    if (!raw) return defaultVal;
+    const str = raw.toString().trim();
+    if (!str) return defaultVal;
+    const name = str.split('@')[0].trim();
+    return name || defaultVal;
+}
+
 /**
  * TimetableAutoController
  * รับผิดชอบ: การจัดตารางสอนอัตโนมัติ และการคัดลอกตารางสอน
@@ -22,7 +36,7 @@ const TimetableAutoController = {
             const tYear = targetYear.toString().trim();
             const tSem = targetSemester.toString().trim();
             const cloneMode = mode || 'merge'; // 'merge' or 'replace'
-            const user = userInsert || 'ADMIN';
+            const user = sanitizeUsername(userInsert, 'ADMIN');
 
             if (sYear === tYear && sSem === tSem) {
                 return res.status(400).json({ success: false, message: 'ปี/ภาคต้นทางและปลายทางต้องไม่ซ้ำกัน' });
@@ -205,10 +219,54 @@ const TimetableAutoController = {
                 1: 'วันจันทร์', 2: 'วันอังคาร', 3: 'วันพุธ', 4: 'วันพฤหัสบดี',
                 5: 'วันศุกร์', 6: 'วันเสาร์', 7: 'วันอาทิตย์'
             };
-            const timeLabels = {
-                1: '07:30 - 09:20', 2: '09:30 - 11:20', 3: '11:30 - 13:20',
-                4: '13:30 - 15:20', 5: '15:30 - 17:20', 6: '17:30 - 19:20', 7: '19:30 - 21:20'
-            };
+            // ดึงช่วงเวลาเรียนจาก RG_SCHEDULE_TIME
+            const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
+            const timeFlag = isSummer ? '2' : '1';
+            let timeSlots = [];
+            try {
+                const timeSql = `
+                    SELECT TRIM(TIME_CODE) AS TIME_CODE, TRIM(TIME_START) AS TIME_START, TRIM(TIME_END) AS TIME_END
+                    FROM RG_SCHEDULE_TIME
+                    WHERE TRIM(TIME_FLAG) = :1
+                    ORDER BY TO_NUMBER(TIME_CODE) ASC
+                `;
+                const timeRes = await SelectModel.findAll(res, timeSql, [timeFlag]);
+                const dbRows = timeRes?.rows || [];
+                if (dbRows.length > 0) {
+                    timeSlots = dbRows.map(r => ({
+                        timeCode: Number(r.TIME_CODE),
+                        period: `${formatMilitaryTime(r.TIME_START)} - ${formatMilitaryTime(r.TIME_END)}`,
+                        label: `คาบที่ ${r.TIME_CODE} (${formatMilitaryTime(r.TIME_START)} - ${formatMilitaryTime(r.TIME_END)})`
+                    }));
+                }
+            } catch (tErr) {
+                console.error('[autoScheduleSolve timeSql error]', tErr);
+            }
+            if (timeSlots.length === 0) {
+                const fallbackRows = timeFlag === '2'
+                    ? [
+                        { TIME_CODE: '1', TIME_START: '0835', TIME_END: '0950' },
+                        { TIME_CODE: '2', TIME_START: '0955', TIME_END: '1110' },
+                        { TIME_CODE: '3', TIME_START: '1115', TIME_END: '1230' },
+                        { TIME_CODE: '4', TIME_START: '1235', TIME_END: '1350' },
+                        { TIME_CODE: '5', TIME_START: '1355', TIME_END: '1510' },
+                    ]
+                    : [
+                        { TIME_CODE: '1', TIME_START: '0800', TIME_END: '0915' },
+                        { TIME_CODE: '2', TIME_START: '0925', TIME_END: '1040' },
+                        { TIME_CODE: '3', TIME_START: '1050', TIME_END: '1205' },
+                        { TIME_CODE: '4', TIME_START: '1215', TIME_END: '1330' },
+                        { TIME_CODE: '5', TIME_START: '1340', TIME_END: '1455' },
+                        { TIME_CODE: '6', TIME_START: '1505', TIME_END: '1620' },
+                    ];
+                timeSlots = fallbackRows.map(r => ({
+                    timeCode: Number(r.TIME_CODE),
+                    period: `${formatMilitaryTime(r.TIME_START)} - ${formatMilitaryTime(r.TIME_END)}`,
+                    label: `คาบที่ ${r.TIME_CODE} (${formatMilitaryTime(r.TIME_START)} - ${formatMilitaryTime(r.TIME_END)})`
+                }));
+            }
+            const timeSlotsMap = {};
+            timeSlots.forEach(ts => { timeSlotsMap[ts.timeCode] = ts; });
 
             for (const course of coursesToSchedule) {
                 const cNo = (course.COURSE_NO || '').trim().toUpperCase();
@@ -233,8 +291,8 @@ const TimetableAutoController = {
                                     dayCode: day,
                                     dayLabel: dayNames[day],
                                     timeCode: time,
-                                    timeLabel: `คาบที่ ${time} (${timeLabels[time]})`,
-                                    period: timeLabels[time],
+                                    timeLabel: timeSlotsMap[time]?.label || `คาบที่ ${time}`,
+                                    period: timeSlotsMap[time]?.period || '',
                                     roomCode: room,
                                 });
                                 placed = true;
@@ -279,7 +337,7 @@ const TimetableAutoController = {
 
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
-            const user = userInsert || 'AUTO_SCHEDULER';
+            const user = sanitizeUsername(userInsert, 'AUTO_SCHEDULER');
 
             let savedCount = 0;
 
