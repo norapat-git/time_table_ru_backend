@@ -12,12 +12,10 @@ function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
 }
 
 const InstructorController = {
-    // 1. ดึงรายชื่ออาจารย์ที่เปิดสอนในปีภาคที่เลือก (LIST)
     async listScheduleInstructors(req, res) {
         try {
             const { year, semester, facultyNo, search } = req.query;
 
-            // หากไม่ได้ระบุ year, semester ให้ดึงจากปีภาคที่ active
             let targetYear = year ? year.toString().trim() : '';
             let targetSem = semester ? semester.toString().trim() : '';
 
@@ -121,7 +119,6 @@ const InstructorController = {
         }
     },
 
-    // 2. ดึง Master List อาจารย์ทั้งหมดจาก UGB_INSTRUCTOR สำหรับ Modal ค้นหา/เพิ่มอาจารย์
     async getMasterInstructors(req, res) {
         try {
             const { facultyNo, search } = req.query;
@@ -181,7 +178,6 @@ const InstructorController = {
         }
     },
 
-    // 3. เพิ่มอาจารย์เข้าสู่ปีภาคการศึกษา (ADD / BATCH ADD) พร้อมเช็คบันทึกซ้ำ
     async addScheduleInstructors(req, res) {
         try {
             const { studyYear, studySemester, instructorCodes, userInsert } = req.body;
@@ -202,7 +198,6 @@ const InstructorController = {
                 return res.status(400).json({ success: false, message: 'กรุณาระบุอาจารย์อย่างน้อย 1 ท่าน' });
             }
 
-            // 1. ดึงรายการอาจารย์ที่มีอยู่แล้วในปีภาคนี้เพื่อตรวจเช็คข้อมูลซ้ำ
             const existingSql = `
                 SELECT TRIM(INSTRUCTOR_CODE) AS INSTRUCTOR_CODE 
                 FROM RG_SCHEDULE_INSTRUCTOR 
@@ -222,7 +217,6 @@ const InstructorController = {
                 });
             }
 
-            // 2. Insert รายการที่ยังไม่มี
             await DbTxModel.withTransaction(async (conn, tx) => {
                 for (const code of toInsert) {
                     const insertSql = `
@@ -252,7 +246,6 @@ const InstructorController = {
         }
     },
 
-    // 4. ลบอาจารย์เดี่ยว (DELETE) พร้อมสำรองลง RG_SCHEDULE_INSTRUCTOR_HIS
     async deleteScheduleInstructor(req, res) {
         try {
             const { studyYear, studySemester, instructorCode, userInsert } = req.body;
@@ -267,7 +260,6 @@ const InstructorController = {
             const cleanUserHis = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 0. ตรวจสอบว่าอาจารย์ถูกนำไปจัดในตารางสอน RG_SCHEDULE_CLASS แล้วหรือไม่
                 const checkScheduledSql = `
                     SELECT DISTINCT 
                         TRIM(rc.COURSE_NO) AS COURSE_NO, 
@@ -289,7 +281,6 @@ const InstructorController = {
                     throw new Error(`ไม่สามารถลบอาจารย์รหัส ${cleanCode} ได้ เนื่องจากมีตารางสอนวิชา [${courseList}] ในปีการศึกษา ${cleanYear}/${cleanSem} อยู่แล้ว (กรุณาลบตารางสอนของอาจารย์ก่อน)`);
                 }
 
-                // 1. สำรองข้อมูลลง RG_SCHEDULE_INSTRUCTOR_HIS
                 const archiveSql = `
                     INSERT INTO RG_SCHEDULE_INSTRUCTOR_HIS (
                         STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
@@ -305,7 +296,6 @@ const InstructorController = {
                 `;
                 await tx.executeOne(archiveSql, [cleanUserHis, cleanYear, cleanSem, cleanCode]);
 
-                // 2. ลบออกจาก RG_SCHEDULE_INSTRUCTOR
                 const deleteSql = `
                     DELETE FROM RG_SCHEDULE_INSTRUCTOR
                     WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(INSTRUCTOR_CODE) = :3
@@ -323,7 +313,6 @@ const InstructorController = {
         }
     },
 
-    // 5. ลบอาจารย์แบบกลุ่ม (BULK DELETE) พร้อมสำรองลง RG_SCHEDULE_INSTRUCTOR_HIS
     async deleteBulkScheduleInstructors(req, res) {
         try {
             const { studyYear, studySemester, instructorCodes, userInsert } = req.body;
@@ -340,7 +329,6 @@ const InstructorController = {
             let deletedCount = 0;
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 0. ตรวจสอบว่ามีอาจารย์ท่านใดในรายการถูกจัดในตารางสอนแล้วหรือไม่
                 const inPlaceholders = codeList.map((_, i) => `:${i + 3}`).join(', ');
                 const checkBulkSql = `
                     SELECT DISTINCT 
@@ -365,7 +353,6 @@ const InstructorController = {
                 }
 
                 for (const code of codeList) {
-                    // 1. สำรองข้อมูลลง HIS
                     const archiveSql = `
                         INSERT INTO RG_SCHEDULE_INSTRUCTOR_HIS (
                             STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
@@ -381,7 +368,6 @@ const InstructorController = {
                     `;
                     await tx.executeOne(archiveSql, [cleanUserHis, cleanYear, cleanSem, code]);
 
-                    // 2. ลบออกจากตารางหลัก
                     const deleteSql = `
                         DELETE FROM RG_SCHEDULE_INSTRUCTOR
                         WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(INSTRUCTOR_CODE) = :3

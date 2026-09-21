@@ -23,7 +23,6 @@ function sanitizeUsername(raw, defaultVal = 'ADMIN') {
  *  - autoScheduleApply  → POST /timetable/auto-schedule/apply
  */
 const TimetableAutoController = {
-    // 10. คัดลอกตารางสอนจากปี/ภาคการศึกษาอื่น (Clone Timetable)
     async cloneSemester(req, res) {
         try {
             const { sourceYear, sourceSemester, targetYear, targetSemester, mode, userInsert } = req.body;
@@ -35,7 +34,7 @@ const TimetableAutoController = {
             const sSem = sourceSemester.toString().trim();
             const tYear = targetYear.toString().trim();
             const tSem = targetSemester.toString().trim();
-            const cloneMode = mode || 'merge'; // 'merge' or 'replace'
+            const cloneMode = mode || 'merge';
             const user = sanitizeUsername(userInsert, 'ADMIN');
 
             if (sYear === tYear && sSem === tSem) {
@@ -46,7 +45,6 @@ const TimetableAutoController = {
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 if (cloneMode === 'replace') {
-                    // สำรอง target ลง HIS
                     await tx.executeOne(`
                         INSERT INTO RG_SCHEDULE_CLASS_HIS (
                             STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, DAY_CODE, TIME_CODE, ROOM_CODE, INSTR_GROUP, INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS
@@ -138,6 +136,17 @@ const TimetableAutoController = {
 
                     insertedClassesCount++;
                 }
+
+                try {
+                    await tx.executeOne(`
+                        DELETE FROM RG_SCHEDULE_INSTRUCTOR_GROUP 
+                        WHERE INSTR_GROUP NOT IN (
+                            SELECT DISTINCT INSTR_GROUP 
+                            FROM RG_SCHEDULE_CLASS 
+                            WHERE INSTR_GROUP IS NOT NULL
+                        )
+                    `);
+                } catch (e) {}
             });
 
             return res.status(200).json({
@@ -153,7 +162,6 @@ const TimetableAutoController = {
         }
     },
 
-    // 11. ประมวลผลจัดตารางสอนอัตโนมัติ (Auto-Timetable Solver)
     async autoScheduleSolve(req, res) {
         try {
             const { studyYear, studySemester, courseNos, allowedRoomCodes, maxClassesPerDay, avoidEveningSlots } = req.body;
@@ -164,9 +172,8 @@ const TimetableAutoController = {
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
             const maxPerDay = Number(maxClassesPerDay) || 2;
-            const skipEvening = avoidEveningSlots !== false; // default true
+            const skipEvening = avoidEveningSlots !== false;
 
-            // 1. ดึงวิชาที่ต้องการจัด
             let coursesToSchedule = [];
             if (Array.isArray(courseNos) && courseNos.length > 0) {
                 const inP = courseNos.map((_, i) => `:${i + 1}`).join(', ');
@@ -179,7 +186,6 @@ const TimetableAutoController = {
                 const cRes = await SelectModel.findAll(res, cSql, courseNos.map(c => c.toString().trim().toUpperCase()));
                 coursesToSchedule = cRes?.rows || [];
             } else {
-                // ถ้าไม่ระบุ ให้ดึงวิชาที่มีการสอนในเทอมก่อน หรือวิชาใน UGB_COURSE มา 30 วิชาเป็นชุดตั้งต้น
                 const cSql = `
                     SELECT TRIM(c.COURSE_NO) AS COURSE_NO, MAX(TRIM(c.COURSE_NAME_THAI)) AS COURSE_NAME_THAI, MAX(c.CREDIT) AS CREDIT
                     FROM UGB_COURSE c
@@ -190,7 +196,6 @@ const TimetableAutoController = {
                 coursesToSchedule = cRes?.rows || [];
             }
 
-            // 2. ดึงห้องเรียนที่อนุญาต
             let rooms = [];
             if (Array.isArray(allowedRoomCodes) && allowedRoomCodes.length > 0) {
                 rooms = allowedRoomCodes.map(r => r.toString().trim()).filter(Boolean);
@@ -198,28 +203,25 @@ const TimetableAutoController = {
                 rooms = ['1', '2', '3', '4', '5', '6'];
             }
 
-            // 3. ดึงสถานะห้องที่ถูกจองแล้วในปี/ภาคนี้
             const occSql = `
                 SELECT TRIM(ROOM_CODE) AS ROOM_CODE, DAY_CODE, TIME_CODE, TRIM(COURSE_NO) AS COURSE_NO
                 FROM RG_SCHEDULE_CLASS
                 WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
             `;
             const occRes = await SelectModel.findAll(res, occSql, [cleanYear, cleanSem]);
-            const occupiedRooms = new Set(); // "room_day_time"
+            const occupiedRooms = new Set();
             (occRes?.rows || []).forEach(r => {
                 occupiedRooms.add(`${r.ROOM_CODE}_${r.DAY_CODE}_${r.TIME_CODE}`);
             });
 
-            // 4. ดึงอาจารย์ของแต่ละวิชา (ถ้ามีจาก RG_SCHEDULE_TEACH หรือ UGB_RU30)
             const proposedSchedule = [];
             const unassigned = [];
-            const instDailyLoads = {}; // "inst_day" -> count
+            const instDailyLoads = {};
 
             const dayNames = {
                 1: 'วันจันทร์', 2: 'วันอังคาร', 3: 'วันพุธ', 4: 'วันพฤหัสบดี',
                 5: 'วันศุกร์', 6: 'วันเสาร์', 7: 'วันอาทิตย์'
             };
-            // ดึงช่วงเวลาเรียนจาก RG_SCHEDULE_TIME
             const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
             const timeFlag = isSummer ? '2' : '1';
             let timeSlots = [];
@@ -272,14 +274,12 @@ const TimetableAutoController = {
                 const cNo = (course.COURSE_NO || '').trim().toUpperCase();
                 let placed = false;
 
-                // วนลูปหา slot ว่างที่เหมาะสม
                 dayLoop: for (let day = 1; day <= 5; day++) {
                     const maxTime = skipEvening ? 5 : 7;
                     for (let time = 1; time <= maxTime; time++) {
                         for (const room of rooms) {
                             const key = `${room}_${day}_${time}`;
                             if (!occupiedRooms.has(key)) {
-                                // ตรวจสอบว่าวิชานี้ยังไม่ถูกจัดในวันเดียวกัน
                                 const alreadyInDay = proposedSchedule.some(p => p.courseNo === cNo && p.dayCode === day);
                                 if (alreadyInDay) continue;
 
@@ -327,7 +327,6 @@ const TimetableAutoController = {
         }
     },
 
-    // 12. ยืนยันบันทึกผลการจัดตารางอัตโนมัติลงฐานข้อมูล
     async autoScheduleApply(req, res) {
         try {
             const { studyYear, studySemester, items, userInsert } = req.body;
@@ -350,7 +349,6 @@ const TimetableAutoController = {
 
                     if (!cNo || isNaN(day) || isNaN(time) || !room) continue;
 
-                    // ตรวจสอบว่ามีวิชานี้อยู่แล้วหรือไม่ ถ้ามีให้อัปเดต ถ้าไม่มีให้แทรก
                     const existRes = await tx.fetchAll(`
                         SELECT COUNT(*) AS CNT FROM RG_SCHEDULE_CLASS 
                         WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(COURSE_NO) = :3

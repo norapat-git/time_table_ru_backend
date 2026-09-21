@@ -12,7 +12,6 @@ function sanitizeUsername(raw, defaultVal = 'ADMIN') {
 }
 
 const CurriculumController = {
-    // 1. ดึงรายชื่อคณะทั้งหมดจาก UGB_FACULTY
     async getFaculties(req, res) {
         try {
             const sql = `
@@ -33,7 +32,6 @@ const CurriculumController = {
         }
     },
 
-    // 2. ดึงกลุ่มวิชาตามคณะจาก UGB_PROGRAM_GROUP_RU30
     async getGroupsByFaculty(req, res) {
         try {
             const { facultyNo } = req.params;
@@ -60,7 +58,6 @@ const CurriculumController = {
         }
     },
 
-    // 3. ดึงกลุ่มวิชาย่อยตามคณะและกลุ่มวิชาจาก UGB_PROGRAM_SUB_GROUP_RU30
     async getSubGroups(req, res) {
         try {
             const { facultyNo, groupNo } = req.params;
@@ -89,7 +86,6 @@ const CurriculumController = {
         }
     },
 
-    // 4. ดึงรายการวิชาในหลักสูตรทั้งหมด (RG_SCHEDULE_CURRICULUM พร้อมข้อมูล Join)
     async listCurriculumCourses(req, res) {
         try {
             const { facultyNo, groupNo, subGroupNo, yearLevel, semester, yearEnroll, search } = req.query;
@@ -188,7 +184,6 @@ const CurriculumController = {
         }
     },
 
-    // 5. เพิ่มวิชาในหลักสูตร (ADD / BULK ADD พร้อมเช็คการบันทึกซ้ำ)
     async addCurriculumCourses(req, res) {
         try {
             const { facultyNo, groupNo, subGroupNo, yearLevel, semester, yearEnroll, userInsert, courseNos } = req.body;
@@ -230,7 +225,6 @@ const CurriculumController = {
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 for (const cleanCourse of coursesToAdd) {
-                    // ตรวจสอบว่าวิชานี้มีอยู่ในหลักสูตรนี้แล้วหรือไม่ (ตามชั้นปี ภาค และปีที่สมัคร)
                     const checkSql = `
                         SELECT COUNT(*) AS CNT 
                         FROM RG_SCHEDULE_CURRICULUM 
@@ -260,7 +254,6 @@ const CurriculumController = {
                         continue;
                     }
 
-                    // บันทึกลงตาราง RG_SCHEDULE_CURRICULUM
                     const insertSql = `
                         INSERT INTO RG_SCHEDULE_CURRICULUM 
                         (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, USER_INSERT)
@@ -305,7 +298,6 @@ const CurriculumController = {
         }
     },
 
-    // 6. ลบวิชาในหลักสูตร (DELETE -> ย้ายเข้า RG_SCHEDULE_CURRICULUM_HIS ก่อนลบ)
     async deleteCurriculumCourse(req, res) {
         try {
             const { facultyNo, groupNo, subGroupNo, yearLevel, semester, yearEnroll, courseNo, userDelete } = req.body;
@@ -378,7 +370,6 @@ const CurriculumController = {
         }
     },
 
-    // 7. ลบหลายวิชาในหลักสูตรพร้อมกัน (BULK DELETE)
     async deleteCurriculumBulk(req, res) {
         try {
             const { items, userDelete } = req.body;
@@ -401,7 +392,6 @@ const CurriculumController = {
 
                     if (!cleanFac || !cleanGrp || !cleanCourse) continue;
 
-                    // 1. สำรองข้อมูลเข้า HIS
                     const archiveSql = `
                         INSERT INTO RG_SCHEDULE_CURRICULUM_HIS 
                         (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS)
@@ -426,7 +416,6 @@ const CurriculumController = {
                         cleanYearEnroll
                     ]);
 
-                    // 2. ลบออกจากตารางหลัก
                     const deleteSql = `
                         DELETE FROM RG_SCHEDULE_CURRICULUM 
                         WHERE TRIM(FACULTY_NO) = :1 

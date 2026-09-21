@@ -13,7 +13,6 @@ function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
 }
 
 const YearSemController = {
-    // 1. ดึงรายการปีภาคทั้งหมด (LIST)
     async listYearSem(req, res) {
         try {
             const sql = `
@@ -35,7 +34,6 @@ const YearSemController = {
         }
     },
 
-    // 2. ดึงปีภาคปัจจุบันที่เปิดใช้งาน (ACTIVE SEMESTER)
     async getActiveYearSem(req, res) {
         try {
             const sql = `
@@ -59,7 +57,6 @@ const YearSemController = {
         }
     },
 
-    // 3. เพิ่มปีภาคใหม่ (ADD) + เช็คการกรอกปีภาคซ้ำ + บันทึก INSERT_DATE = SYSDATE, USER_INSERT
     async addYearSem(req, res) {
         try {
             const { studyYear, studySemester, studyActive, userInsert } = req.body;
@@ -72,7 +69,6 @@ const YearSemController = {
             const cleanUser = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
             const yearNum = parseInt(cleanYear, 10);
 
-            // ตรวจสอบปีการศึกษาต้องไม่น้อยกว่า 2550
             if (isNaN(yearNum) || yearNum < 2550 || cleanYear.length !== 4) {
                 return res.status(400).json({
                     success: false,
@@ -80,7 +76,6 @@ const YearSemController = {
                 });
             }
 
-            // ตรวจสอบภาคการศึกษา (ภาค 1, ภาค 2 และ ภาค 3 / ภาคฤดูร้อน)
             if (!['1', '2', '3'].includes(cleanSem)) {
                 return res.status(400).json({
                     success: false,
@@ -91,7 +86,6 @@ const YearSemController = {
             const cleanActive = (studyActive === '1' || studyActive === 1 || studyActive === true || studyActive === 'true') ? '1' : '0';
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // ตรวจสอบการกรอกปีภาคซ้ำ
                 const checkSql = `
                     SELECT STUDY_YEAR, STUDY_SEMESTER 
                     FROM RG_SCHEDULE_YEARSEM 
@@ -102,7 +96,6 @@ const YearSemController = {
                     throw new Error(`ปีการศึกษา ${cleanYear} ภาคการศึกษาที่ ${cleanSem} มีอยู่ในระบบแล้ว`);
                 }
 
-                // ถ้ากำหนดให้เป็น active = '1' ให้เคลียร์รายการอื่นเป็น '0' ก่อน
                 if (cleanActive === '1') {
                     const resetSql = `UPDATE RG_SCHEDULE_YEARSEM SET STUDY_ACTIVE = '0'`;
                     await tx.executeOne(resetSql, []);
@@ -126,7 +119,6 @@ const YearSemController = {
         }
     },
 
-    // 4. แก้ไขข้อมูลปีภาค (EDIT) + บันทึก INSERT_DATE = SYSDATE, USER_INSERT
     async updateYearSem(req, res) {
         try {
             const { oldYear, oldSemester, newYear, newSemester, studyActive, userInsert } = req.body;
@@ -141,7 +133,6 @@ const YearSemController = {
             const cleanUser = sanitizeUsername(userInsert || req.body.user || req.body.email, 'SYSTEM');
             const yearNum = parseInt(nYear, 10);
 
-            // ตรวจสอบปีการศึกษาใหม่ต้องไม่น้อยกว่า 2550
             if (isNaN(yearNum) || yearNum < 2550 || nYear.length !== 4) {
                 return res.status(400).json({
                     success: false,
@@ -149,7 +140,6 @@ const YearSemController = {
                 });
             }
 
-            // ตรวจสอบภาคการศึกษา (ภาค 1, ภาค 2 และ ภาค 3 / ภาคฤดูร้อน)
             if (!['1', '2', '3'].includes(nSem)) {
                 return res.status(400).json({
                     success: false,
@@ -160,7 +150,6 @@ const YearSemController = {
             const cleanActive = (studyActive === '1' || studyActive === 1 || studyActive === true || studyActive === 'true') ? '1' : '0';
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // หากมีการเปลี่ยนปีหรือภาค ให้ตรวจเช็คว่าซ้ำกับรายการอื่นหรือไม่
                 if (oYear !== nYear || oSem !== nSem) {
                     const checkSql = `
                         SELECT STUDY_YEAR, STUDY_SEMESTER 
@@ -173,7 +162,6 @@ const YearSemController = {
                     }
                 }
 
-                // ถ้ากำหนดให้เป็น active = '1' ให้เคลียร์รายการอื่นเป็น '0' ก่อน
                 if (cleanActive === '1') {
                     const resetSql = `UPDATE RG_SCHEDULE_YEARSEM SET STUDY_ACTIVE = '0'`;
                     await tx.executeOne(resetSql, []);
@@ -202,7 +190,6 @@ const YearSemController = {
         }
     },
 
-    // 5. กำหนดปีภาคที่ใช้งาน (SET ACTIVE SEMESTER)
     async setActiveYearSem(req, res) {
         try {
             const { studyYear, studySemester } = req.body;
@@ -214,11 +201,9 @@ const YearSemController = {
             const cleanSem = studySemester.toString().trim();
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 1. เคลียร์ทุกแถวในฐานข้อมูลเป็น '0'
                 const resetSql = `UPDATE RG_SCHEDULE_YEARSEM SET STUDY_ACTIVE = '0'`;
                 await tx.executeOne(resetSql, []);
 
-                // 2. ตั้งแถวที่เลือกเป็น '1'
                 const setActiveSql = `
                     UPDATE RG_SCHEDULE_YEARSEM 
                     SET STUDY_ACTIVE = '1' 
@@ -237,7 +222,6 @@ const YearSemController = {
         }
     },
 
-    // 6. ลบปีภาค (DELETE) -> Cascade ลบข้อมูลตารางสอน, กลุ่มอาจารย์ผู้สอน, รายชื่ออาจารย์, และวิชาที่เปิดสอนในปีภาคนั้นทั้งหมด พร้อมจัดเก็บประวัติลง HIS
     async deleteYearSem(req, res) {
         try {
             const { year, semester } = req.params;
@@ -250,7 +234,6 @@ const YearSemController = {
             const cleanUser = sanitizeUsername(req.body?.userInsert || req.query?.userInsert, 'ADMIN');
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 0. ตรวจสอบว่าปีภาคนี้ตั้งเป็นปีภาคปัจจุบัน (STUDY_ACTIVE = '1') หรือไม่
                 const checkActiveSql = `
                     SELECT TRIM(NVL(STUDY_ACTIVE, '0')) AS STUDY_ACTIVE 
                     FROM RG_SCHEDULE_YEARSEM 
@@ -261,7 +244,6 @@ const YearSemController = {
                     throw new Error('ไม่สามารถลบปีการศึกษาและภาคเรียนที่ตั้งเป็นปัจจุบันได้ กรุณาเปลี่ยนปีภาคปัจจุบันเป็นอันอื่นก่อน');
                 }
 
-                // 1. สำรองข้อมูลตารางสอน RG_SCHEDULE_CLASS -> RG_SCHEDULE_CLASS_HIS
                 const archiveClassSql = `
                     INSERT INTO RG_SCHEDULE_CLASS_HIS (
                         STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, DAY_CODE, TIME_CODE, ROOM_CODE, INSTR_GROUP,
@@ -279,14 +261,12 @@ const YearSemController = {
                     console.warn('[deleteYearSem archiveClass warning]', e?.message);
                 }
 
-                // 2. ลบข้อมูลตารางสอน RG_SCHEDULE_CLASS
                 const deleteClassSql = `
                     DELETE FROM RG_SCHEDULE_CLASS 
                     WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
                 `;
                 await tx.executeOne(deleteClassSql, [cleanYear, cleanSem]);
 
-                // 3. สำรองข้อมูลการสอน RG_SCHEDULE_TEACH -> RG_SCHEDULE_TEACH_HIS
                 const archiveTeachSql = `
                     INSERT INTO RG_SCHEDULE_TEACH_HIS (
                         STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_GROUP, INSTRUCTOR_CODE, INSTRUCTOR_ORD,
@@ -304,14 +284,25 @@ const YearSemController = {
                     console.warn('[deleteYearSem archiveTeach warning]', e?.message);
                 }
 
-                // 4. ลบข้อมูลการสอน RG_SCHEDULE_TEACH
                 const deleteTeachSql = `
                     DELETE FROM RG_SCHEDULE_TEACH 
                     WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
                 `;
                 await tx.executeOne(deleteTeachSql, [cleanYear, cleanSem]);
 
-                // 5. สำรองข้อมูลรายชื่ออาจารย์ RG_SCHEDULE_INSTRUCTOR -> RG_SCHEDULE_INSTRUCTOR_HIS
+                try {
+                    await tx.executeOne(`
+                        DELETE FROM RG_SCHEDULE_INSTRUCTOR_GROUP 
+                        WHERE INSTR_GROUP NOT IN (
+                            SELECT DISTINCT INSTR_GROUP 
+                            FROM RG_SCHEDULE_CLASS 
+                            WHERE INSTR_GROUP IS NOT NULL
+                        )
+                    `);
+                } catch (e) {
+                    console.warn('[deleteYearSem RG_SCHEDULE_INSTRUCTOR_GROUP cleanup warning]', e?.message);
+                }
+
                 const archiveInstrSql = `
                     INSERT INTO RG_SCHEDULE_INSTRUCTOR_HIS (
                         STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
@@ -331,14 +322,12 @@ const YearSemController = {
                     console.warn('[deleteYearSem archiveInstr warning]', e?.message);
                 }
 
-                // 6. ลบข้อมูลรายชื่ออาจารย์ RG_SCHEDULE_INSTRUCTOR
                 const deleteInstrSql = `
                     DELETE FROM RG_SCHEDULE_INSTRUCTOR 
                     WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
                 `;
                 await tx.executeOne(deleteInstrSql, [cleanYear, cleanSem]);
 
-                // 7. นำวิชาที่เปิดสอนในปีภาคนี้ทั้งหมดไปสำรองไว้ใน RG_SCHEDULE_COURSE_HIS ก่อนลบ
                 const archiveCourseSql = `
                     INSERT INTO RG_SCHEDULE_COURSE_HIS (
                         STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
@@ -358,14 +347,12 @@ const YearSemController = {
                     console.warn('[deleteYearSem archiveCourse warning]', e?.message);
                 }
 
-                // 8. ลบวิชาทั้งหมดที่อยู่ในปีภาคนี้ออกจาก RG_SCHEDULE_COURSE
                 const deleteCourseSql = `
                     DELETE FROM RG_SCHEDULE_COURSE 
                     WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
                 `;
                 await tx.executeOne(deleteCourseSql, [cleanYear, cleanSem]);
 
-                // 9. ลบปีภาคออกจาก RG_SCHEDULE_YEARSEM
                 const deleteYearSemSql = `
                     DELETE FROM RG_SCHEDULE_YEARSEM 
                     WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2

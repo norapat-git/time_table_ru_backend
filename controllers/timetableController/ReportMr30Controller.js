@@ -1,7 +1,6 @@
 const SelectModel = require('../../models/db/SelectModel');
 
 const ReportMr30Controller = {
-    // 1. ดึงข้อมูลรายงาน มร.30 จาก UGB_RU30 พร้อมข้อมูลวิชา อาจารย์ คณะ และเวลา
     async getReportMr30(req, res) {
         try {
             const { year, semester, facultyNo, dayCode, search } = req.query;
@@ -9,7 +8,6 @@ const ReportMr30Controller = {
             let targetYear = year ? year.toString().trim() : '';
             let targetSem = semester ? semester.toString().trim() : '';
 
-            // ถ้าไม่ได้ระบุปี/ภาค ให้ดึงปี/ภาคที่เปิดใช้งานปัจจุบัน
             if (!targetYear || !targetSem) {
                 const activeSql = `
                     SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER 
@@ -79,19 +77,16 @@ const ReportMr30Controller = {
 
             const params = [targetYear, targetSem];
 
-            // กรองตามคณะ
             if (facultyNo && facultyNo.toString().trim() !== '' && facultyNo.toString().trim() !== 'ALL') {
                 sql += ` AND TRIM(ui.FACULTY_NO) = :${params.length + 1}`;
                 params.push(facultyNo.toString().trim());
             }
 
-            // กรองตามวัน
             if (dayCode && dayCode.toString().trim() !== '' && dayCode.toString().trim() !== 'ALL') {
                 sql += ` AND ru.DAY_CODE = :${params.length + 1}`;
                 params.push(Number(dayCode));
             }
 
-            // กรองตามคำค้นหา (รหัสวิชา, ชื่อวิชา, รหัสอาจารย์, ชื่ออาจารย์, ห้องเรียน)
             if (search && search.toString().trim() !== '') {
                 const searchPattern = `%${search.toString().trim().toUpperCase()}%`;
                 const pIndex = params.length + 1;
@@ -113,7 +108,6 @@ const ReportMr30Controller = {
             const result = await SelectModel.findAll(res, sql, params);
             const rows = (result && result.rows) ? result.rows : [];
 
-            // Grouping: จัดกลุ่มอาจารย์หลายท่านใน Section/Slot เดียวกัน
             const slotMap = new Map();
             const distinctCourses = new Set();
             const distinctInstructors = new Set();
@@ -203,7 +197,6 @@ const ReportMr30Controller = {
         }
     },
 
-    // 2. ดึงรายการคณะที่มีในระบบ
     async getFaculties(req, res) {
         try {
             const sql = `

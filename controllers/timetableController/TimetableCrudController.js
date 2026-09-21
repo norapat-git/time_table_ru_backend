@@ -26,6 +26,81 @@ function sanitizeUsername(raw, defaultVal = 'ADMIN') {
 }
 
 /**
+ * รีเซ็ต Sequence NEXT_GROUP ให้กลับมาเริ่มที่ 1 (เมื่อไม่มีข้อมูลในตาราง RG_SCHEDULE_INSTRUCTOR_GROUP)
+ */
+async function resetNextGroupSequence(tx) {
+    try {
+        await tx.executeOne(`DROP SEQUENCE NEXT_GROUP`);
+        await tx.executeOne(`CREATE SEQUENCE NEXT_GROUP START WITH 1 INCREMENT BY 1 CACHE 20`);
+    } catch (err) {
+        console.warn('[resetNextGroupSequence notice]', err?.message);
+    }
+}
+
+/**
+ * ล้างกลุ่มผู้สอนที่ไม่มีคลาสใดใน RG_SCHEDULE_CLASS ใช้งานแล้ว ออกจาก RG_SCHEDULE_TEACH และ RG_SCHEDULE_INSTRUCTOR_GROUP
+ */
+async function cleanupOrphanInstructorGroups(tx) {
+    try {
+        await tx.executeOne(`
+            DELETE FROM RG_SCHEDULE_TEACH 
+            WHERE TRIM(INSTRUCTOR_GROUP) NOT IN (
+                SELECT DISTINCT TRIM(TO_CHAR(INSTR_GROUP)) 
+                FROM RG_SCHEDULE_CLASS 
+                WHERE INSTR_GROUP IS NOT NULL
+            )
+        `);
+        await tx.executeOne(`
+            DELETE FROM RG_SCHEDULE_INSTRUCTOR_GROUP 
+            WHERE INSTR_GROUP NOT IN (
+                SELECT DISTINCT INSTR_GROUP 
+                FROM RG_SCHEDULE_CLASS 
+                WHERE INSTR_GROUP IS NOT NULL
+            )
+        `);
+
+        const countRes = await tx.fetchOne(`SELECT COUNT(*) AS CNT FROM RG_SCHEDULE_INSTRUCTOR_GROUP`);
+        if (Number(countRes?.CNT || 0) === 0) {
+            await resetNextGroupSequence(tx);
+        }
+    } catch (err) {
+        console.warn('[cleanupOrphanInstructorGroups notice]', err?.message);
+    }
+}
+
+
+async function getNextInstrGroup(tx) {
+    const countRes = await tx.fetchOne(`SELECT COUNT(*) AS CNT FROM RG_SCHEDULE_INSTRUCTOR_GROUP`);
+    const totalGroups = Number(countRes?.CNT || 0);
+
+    if (totalGroups === 0) {
+        await resetNextGroupSequence(tx);
+    }
+    const seqRow = await tx.fetchOne(`SELECT NEXT_GROUP.NEXTVAL AS NEXT_ID FROM DUAL`);
+    let nextGroup = Number(seqRow?.NEXT_ID || 1);
+
+    const checkSql = `
+        SELECT 1 FROM (
+            SELECT INSTR_GROUP FROM RG_SCHEDULE_CLASS WHERE INSTR_GROUP = :1
+            UNION
+            SELECT INSTR_GROUP FROM RG_SCHEDULE_INSTRUCTOR_GROUP WHERE INSTR_GROUP = :1
+            UNION
+            SELECT TO_NUMBER(INSTRUCTOR_GROUP) AS INSTR_GROUP 
+            FROM RG_SCHEDULE_TEACH 
+            WHERE REGEXP_LIKE(TRIM(INSTRUCTOR_GROUP), '^[0-9]+$') AND TO_NUMBER(INSTRUCTOR_GROUP) = :1
+        ) WHERE ROWNUM = 1
+    `;
+    let exists = await tx.fetchOne(checkSql, [nextGroup]);
+    while (exists) {
+        const nextSeq = await tx.fetchOne(`SELECT NEXT_GROUP.NEXTVAL AS NEXT_ID FROM DUAL`);
+        nextGroup = Number(nextSeq?.NEXT_ID || (nextGroup + 1));
+        exists = await tx.fetchOne(checkSql, [nextGroup]);
+    }
+
+    return nextGroup;
+}
+
+/**
  * TimetableCrudController
  * รับผิดชอบ: เพิ่ม / แก้ไข / ลบ / ย้ายคาบตารางสอน
  *  - addScheduleClass          → POST /timetable/add
@@ -35,7 +110,6 @@ function sanitizeUsername(raw, defaultVal = 'ADMIN') {
  *  - updateScheduleSlots       → POST /timetable/update-slots
  */
 const TimetableCrudController = {
-    // 5. เพิ่มข้อมูลตารางสอน (บันทึกลง RG_SCHEDULE_CLASS และ RG_SCHEDULE_TEACH รองรับหลายคาบ)
     async addScheduleClass(req, res) {
         try {
             const { studyYear, studySemester, courseNo, dayCode, timeCode, timeCodes, roomCode, instructorCodes, userInsert } = req.body;
@@ -54,6 +128,17 @@ const TimetableCrudController = {
                 });
             }
 
+            if (targetTimeCodes.length > 1) {
+                for (let i = 0; i < targetTimeCodes.length - 1; i++) {
+                    if (targetTimeCodes[i + 1] !== targetTimeCodes[i] + 1) {
+                        return res.status(400).json({
+                            success: false,
+                            message: 'คาบเวลาที่เลือกมากกว่า 1 คาบจะต้องเป็นคาบที่ติดกันเท่านั้น',
+                        });
+                    }
+                }
+            }
+
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
             const cleanCourseNo = courseNo.toString().trim().toUpperCase();
@@ -61,7 +146,6 @@ const TimetableCrudController = {
             const cleanRoom = (roomCode || '').toString().trim();
             const user = sanitizeUsername(userInsert, 'ADMIN');
 
-            // 1. ตรวจสอบการชนของห้องเรียน (Room Collision Check) สำหรับทุกคาบที่เลือก
             if (cleanRoom && cleanRoom !== '-') {
                 for (const cleanTime of targetTimeCodes) {
                     const roomCheckSql = `
@@ -92,7 +176,6 @@ const TimetableCrudController = {
                                 });
                             }
 
-                            // ตรวจสอบว่า existingCourseNo กับ cleanCourseNo อยู่ในกลุ่มวิชาคู่เดียวกันหรือไม่
                             const pairCheckSql = `
                                 SELECT COUNT(*) AS CNT
                                 FROM RG_SCHEDULE_PAIR_COURSE p1
@@ -114,7 +197,6 @@ const TimetableCrudController = {
                         }
                     }
 
-                    // 2. ตรวจสอบวิชาเดิมซ้ำวันเวลาเดิม
                     const checkCourseSql = `
                         SELECT COUNT(*) AS CNT
                         FROM RG_SCHEDULE_CLASS
@@ -134,11 +216,9 @@ const TimetableCrudController = {
                 }
             }
 
-            // จัดการกลุ่มอาจารย์ผู้สอน (RG_SCHEDULE_INSTRUCTOR_GROUP & RG_SCHEDULE_TEACH)
             const rawCodes = Array.isArray(instructorCodes) ? instructorCodes : [];
             const uniqueCodes = Array.from(new Set(rawCodes.map((c) => (c || '').toString().trim()).filter(Boolean))).sort();
 
-            // 3. ตรวจสอบว่าอาจารย์ติดสอนในระบบส่วนกลาง มร.30 หรือไม่ (RU30 Collision Check)
             if (uniqueCodes.length > 0) {
                 const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
                 const timeFlag = isSummer ? '2' : '1';
@@ -236,7 +316,6 @@ const TimetableCrudController = {
                 }
             }
 
-            // 4. ตรวจสอบอาจารย์ติดสอนในคาบนี้ (Instructor Collision Check) สำหรับทุกคาบที่เลือก
             if (uniqueCodes.length > 0) {
                 for (const cleanTime of targetTimeCodes) {
                     const instPlaceholders = uniqueCodes.map((_, idx) => `:${idx + 6}`).join(',');
@@ -294,37 +373,23 @@ const TimetableCrudController = {
 
             await DbTxModel.withTransaction(async (conn, tx) => {
                 if (uniqueCodes.length > 0) {
-                    const existingTeachSql = `
-                        SELECT 
-                            TO_NUMBER(INSTRUCTOR_GROUP) AS INSTRUCTOR_GROUP, 
-                            COUNT(*) AS TOTAL_INSTR,
-                            LISTAGG(TRIM(INSTRUCTOR_CODE), ',') WITHIN GROUP (ORDER BY TRIM(INSTRUCTOR_CODE)) AS CODES_STR
-                        FROM RG_SCHEDULE_TEACH
-                        WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
-                        GROUP BY INSTRUCTOR_GROUP
+                    const sameCourseSql = `
+                        SELECT DISTINCT INSTR_GROUP 
+                        FROM RG_SCHEDULE_CLASS 
+                        WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(COURSE_NO) = :3 AND INSTR_GROUP IS NOT NULL AND INSTR_GROUP > 0
                     `;
-                    const existingGroups = await tx.fetchAll(existingTeachSql, [cleanYear, cleanSem]);
+                    const sameCourseRes = await tx.fetchOne(sameCourseSql, [cleanYear, cleanSem, cleanCourseNo]);
 
-                    const targetCodesStr = uniqueCodes.join(',');
-                    const matched = existingGroups.find((g) => (g.CODES_STR || '').trim() === targetCodesStr && Number(g.TOTAL_INSTR) === uniqueCodes.length);
-
-                    if (matched && matched.INSTRUCTOR_GROUP) {
-                        targetInstrGroup = Number(matched.INSTRUCTOR_GROUP);
+                    if (sameCourseRes && sameCourseRes.INSTR_GROUP) {
+                        targetInstrGroup = Number(sameCourseRes.INSTR_GROUP);
                     } else {
-                        const maxGroupSql = `
-                            SELECT 
-                                GREATEST(
-                                    NVL((SELECT MAX(INSTR_GROUP) FROM RG_SCHEDULE_INSTRUCTOR_GROUP), 0),
-                                    NVL((SELECT MAX(INSTR_GROUP) FROM RG_SCHEDULE_CLASS WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2), 0),
-                                    NVL((SELECT MAX(TO_NUMBER(INSTRUCTOR_GROUP)) FROM RG_SCHEDULE_TEACH WHERE TRIM(STUDY_YEAR) = :3 AND TRIM(STUDY_SEMESTER) = :4), 0)
-                                ) + 1 AS NEXT_GROUP
-                            FROM DUAL
-                        `;
-                        const maxRow = await tx.fetchOne(maxGroupSql, [cleanYear, cleanSem, cleanYear, cleanSem]);
-                        targetInstrGroup = Number(maxRow?.NEXT_GROUP || 1);
+                        targetInstrGroup = await getNextInstrGroup(tx);
 
                         try {
-                            await tx.executeOne(`INSERT INTO RG_SCHEDULE_INSTRUCTOR_GROUP (INSTR_GROUP) VALUES (:1)`, [targetInstrGroup]);
+                            await tx.executeOne(
+                                `INSERT INTO RG_SCHEDULE_INSTRUCTOR_GROUP (INSTR_GROUP) VALUES (:1)`,
+                                [targetInstrGroup]
+                            );
                         } catch (igErr) {
                             console.warn('[RG_SCHEDULE_INSTRUCTOR_GROUP insert notice]', igErr?.message);
                         }
@@ -356,7 +421,6 @@ const TimetableCrudController = {
                     }
                 }
 
-                // บันทึกลง RG_SCHEDULE_CLASS สำหรับทุกคาบที่เลือก
                 for (const cleanTime of targetTimeCodes) {
                     const insertClassSql = `
                         INSERT INTO RG_SCHEDULE_CLASS (
@@ -399,7 +463,6 @@ const TimetableCrudController = {
         }
     },
 
-    // 5.1 แก้ไขข้อมูลตารางสอน (อัปเดต RG_SCHEDULE_CLASS และ RG_SCHEDULE_TEACH พร้อมสำรองประวัติลง HIS)
     async updateScheduleClass(req, res) {
         try {
             const {
@@ -428,6 +491,17 @@ const TimetableCrudController = {
                 });
             }
 
+            if (targetTimeCodes.length > 1) {
+                for (let i = 0; i < targetTimeCodes.length - 1; i++) {
+                    if (targetTimeCodes[i + 1] !== targetTimeCodes[i] + 1) {
+                        return res.status(400).json({
+                            success: false,
+                            message: 'คาบเวลาที่เลือกมากกว่า 1 คาบจะต้องเป็นคาบที่ติดกันเท่านั้น',
+                        });
+                    }
+                }
+            }
+
             const cleanYear = studyYear.toString().trim();
             const cleanSem = studySemester.toString().trim();
             const cleanCourseNo = courseNo.toString().trim().toUpperCase();
@@ -435,7 +509,6 @@ const TimetableCrudController = {
             const cleanRoom = roomCode.toString().trim();
             const user = sanitizeUsername(userInsert, 'ADMIN');
 
-            // 1. ตรวจสอบการชนของห้องเรียน (Room Collision Check) สำหรับทุกคาบที่เลือก
             if (cleanRoom && cleanRoom !== '-') {
                 for (const cleanTime of targetTimeCodes) {
                     const roomCheckSql = `
@@ -461,7 +534,6 @@ const TimetableCrudController = {
                         for (const er of existingRoomClasses) {
                             const existingCourseNo = (er.COURSE_NO || '').trim().toUpperCase();
 
-                            // ตรวจสอบว่า existingCourseNo กับ cleanCourseNo อยู่ในกลุ่มวิชาคู่เดียวกันหรือไม่
                             const pairCheckSql = `
                                 SELECT COUNT(*) AS CNT
                                 FROM RG_SCHEDULE_PAIR_COURSE p1
@@ -485,7 +557,6 @@ const TimetableCrudController = {
             }
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 1. ดึง INSTR_GROUP เดิม
                 const curClassSql = `
                     SELECT INSTR_GROUP, ROOM_CODE, DAY_CODE, TIME_CODE
                     FROM RG_SCHEDULE_CLASS
@@ -499,7 +570,6 @@ const TimetableCrudController = {
                 }
                 let targetInstrGroup = curClassRes[0].INSTR_GROUP;
 
-                // 2. สำรอง RG_SCHEDULE_CLASS -> RG_SCHEDULE_CLASS_HIS
                 const hisClassSql = `
                     INSERT INTO RG_SCHEDULE_CLASS_HIS (
                         STUDY_YEAR,
@@ -533,66 +603,99 @@ const TimetableCrudController = {
                 `;
                 await tx.executeOne(hisClassSql, [user, cleanYear, cleanSem, cleanCourseNo]);
 
-                // 3. จัดการอาจารย์ผู้สอน
                 const rawCodes = Array.isArray(instructorCodes)
                     ? instructorCodes.map(c => (c || '').toString().trim()).filter(Boolean)
                     : (typeof instructorCodes === 'string' ? instructorCodes.split(',').map(c => c.trim()).filter(Boolean) : []);
                 const uniqueInstructors = Array.from(new Set(rawCodes));
 
-                if (!targetInstrGroup || targetInstrGroup <= 0) {
-                    if (uniqueInstructors.length > 0) {
-                        const seqSql = `SELECT NVL(MAX(INSTR_GROUP), 0) + 1 AS NEXT_ID FROM RG_SCHEDULE_INSTRUCTOR_GROUP`;
-                        const seqRes = await tx.fetchAll(seqSql, []);
-                        targetInstrGroup = Number(seqRes?.[0]?.NEXT_ID || 1);
+                if (uniqueInstructors.length === 0) {
+                    if (targetInstrGroup && targetInstrGroup > 0) {
+                        const hisTeachSql = `
+                            INSERT INTO RG_SCHEDULE_TEACH_HIS (
+                                STUDY_YEAR,
+                                STUDY_SEMESTER,
+                                INSTRUCTOR_GROUP,
+                                INSTRUCTOR_CODE,
+                                INSTRUCTOR_ORD,
+                                INSERT_DATE,
+                                INSERT_HIS_DATE,
+                                USER_INSERT,
+                                USER_INSERT_HIS
+                            )
+                            SELECT 
+                                STUDY_YEAR,
+                                STUDY_SEMESTER,
+                                INSTRUCTOR_GROUP,
+                                INSTRUCTOR_CODE,
+                                INSTRUCTOR_ORD,
+                                INSERT_DATE,
+                                SYSDATE,
+                                USER_INSERT,
+                                :1
+                            FROM RG_SCHEDULE_TEACH
+                            WHERE TRIM(STUDY_YEAR) = :2 
+                              AND TRIM(STUDY_SEMESTER) = :3 
+                              AND TRIM(INSTRUCTOR_GROUP) = :4
+                        `;
+                        try {
+                            await tx.executeOne(hisTeachSql, [user, cleanYear, cleanSem, targetInstrGroup.toString()]);
+                        } catch (e) {
+                            console.warn('[RG_SCHEDULE_TEACH_HIS backup warning in update]', e?.message);
+                        }
+
                         await tx.executeOne(
-                            `INSERT INTO RG_SCHEDULE_INSTRUCTOR_GROUP (INSTR_GROUP, INSTR_GROUP_NAME, INSERT_DATE, USER_INSERT) VALUES (:1, :2, SYSDATE, :3)`,
-                            [targetInstrGroup, `กลุ่มผู้สอนวิชา ${cleanCourseNo}`, user]
+                            `DELETE FROM RG_SCHEDULE_TEACH WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(INSTRUCTOR_GROUP) = :3`,
+                            [cleanYear, cleanSem, targetInstrGroup.toString()]
                         );
                     }
+                    targetInstrGroup = null;
                 } else {
-                    // สำรอง RG_SCHEDULE_TEACH -> RG_SCHEDULE_TEACH_HIS
-                    const hisTeachSql = `
-                        INSERT INTO RG_SCHEDULE_TEACH_HIS (
-                            STUDY_YEAR,
-                            STUDY_SEMESTER,
-                            INSTRUCTOR_GROUP,
-                            INSTRUCTOR_CODE,
-                            INSTRUCTOR_ORD,
-                            INSERT_DATE,
-                            INSERT_HIS_DATE,
-                            USER_INSERT,
-                            USER_INSERT_HIS
-                        )
-                        SELECT 
-                            STUDY_YEAR,
-                            STUDY_SEMESTER,
-                            INSTRUCTOR_GROUP,
-                            INSTRUCTOR_CODE,
-                            INSTRUCTOR_ORD,
-                            INSERT_DATE,
-                            SYSDATE,
-                            USER_INSERT,
-                            :1
-                        FROM RG_SCHEDULE_TEACH
-                        WHERE TRIM(STUDY_YEAR) = :2 
-                          AND TRIM(STUDY_SEMESTER) = :3 
-                          AND TRIM(INSTRUCTOR_GROUP) = :4
-                    `;
-                    try {
-                        await tx.executeOne(hisTeachSql, [user, cleanYear, cleanSem, targetInstrGroup.toString()]);
-                    } catch (e) {
-                        console.warn('[RG_SCHEDULE_TEACH_HIS backup warning in update]', e?.message);
+                    if (!targetInstrGroup || targetInstrGroup <= 0) {
+                        targetInstrGroup = await getNextInstrGroup(tx);
+                        await tx.executeOne(
+                            `INSERT INTO RG_SCHEDULE_INSTRUCTOR_GROUP (INSTR_GROUP) VALUES (:1)`,
+                            [targetInstrGroup]
+                        );
+                    } else {
+                        const hisTeachSql = `
+                            INSERT INTO RG_SCHEDULE_TEACH_HIS (
+                                STUDY_YEAR,
+                                STUDY_SEMESTER,
+                                INSTRUCTOR_GROUP,
+                                INSTRUCTOR_CODE,
+                                INSTRUCTOR_ORD,
+                                INSERT_DATE,
+                                INSERT_HIS_DATE,
+                                USER_INSERT,
+                                USER_INSERT_HIS
+                            )
+                            SELECT 
+                                STUDY_YEAR,
+                                STUDY_SEMESTER,
+                                INSTRUCTOR_GROUP,
+                                INSTRUCTOR_CODE,
+                                INSTRUCTOR_ORD,
+                                INSERT_DATE,
+                                SYSDATE,
+                                USER_INSERT,
+                                :1
+                            FROM RG_SCHEDULE_TEACH
+                            WHERE TRIM(STUDY_YEAR) = :2 
+                              AND TRIM(STUDY_SEMESTER) = :3 
+                              AND TRIM(INSTRUCTOR_GROUP) = :4
+                        `;
+                        try {
+                            await tx.executeOne(hisTeachSql, [user, cleanYear, cleanSem, targetInstrGroup.toString()]);
+                        } catch (e) {
+                            console.warn('[RG_SCHEDULE_TEACH_HIS backup warning in update]', e?.message);
+                        }
+
+                        await tx.executeOne(
+                            `DELETE FROM RG_SCHEDULE_TEACH WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(INSTRUCTOR_GROUP) = :3`,
+                            [cleanYear, cleanSem, targetInstrGroup.toString()]
+                        );
                     }
 
-                    // ลบรายการผู้สอนเดิมออก
-                    await tx.executeOne(
-                        `DELETE FROM RG_SCHEDULE_TEACH WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(INSTRUCTOR_GROUP) = :3`,
-                        [cleanYear, cleanSem, targetInstrGroup.toString()]
-                    );
-                }
-
-                // แทรกรายชื่ออาจารย์ผู้สอนใหม่
-                if (uniqueInstructors.length > 0 && targetInstrGroup) {
                     for (let i = 0; i < uniqueInstructors.length; i++) {
                         const code = uniqueInstructors[i];
                         const insertTeachSql = `
@@ -617,7 +720,6 @@ const TimetableCrudController = {
                     }
                 }
 
-                // 4. ลบรายการคาบเดิมใน RG_SCHEDULE_CLASS แล้วแทรกคาบใหม่ตาม targetTimeCodes
                 await tx.executeOne(
                     `DELETE FROM RG_SCHEDULE_CLASS WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(COURSE_NO) = :3`,
                     [cleanYear, cleanSem, cleanCourseNo]
@@ -650,6 +752,8 @@ const TimetableCrudController = {
                         user,
                     ]);
                 }
+
+                await cleanupOrphanInstructorGroups(tx);
             });
 
             return res.status(200).json({
@@ -664,7 +768,6 @@ const TimetableCrudController = {
         }
     },
 
-    // 6. ลบข้อมูลตารางสอน (สำรองลง RG_SCHEDULE_CLASS_HIS และ RG_SCHEDULE_TEACH_HIS)
     async deleteScheduleClass(req, res) {
         try {
             const { studyYear, studySemester, courseNo, instrGroup, dayCode, timeCode, timeCodes, roomCode, userInsert } = req.body;
@@ -685,7 +788,6 @@ const TimetableCrudController = {
             const cleanRoom = (roomCode !== undefined && roomCode !== null && roomCode !== '') ? roomCode.toString().trim() : null;
             const user = sanitizeUsername(userInsert, 'ADMIN');
 
-            // จัดการคาบเรียน (รองรับทั้ง timeCodes array และ timeCode เดี่ยว)
             let targetTimeList = [];
             if (Array.isArray(timeCodes) && timeCodes.length > 0) {
                 targetTimeList = timeCodes.map(Number).filter(n => !isNaN(n));
@@ -694,7 +796,6 @@ const TimetableCrudController = {
             }
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // สร้าง WHERE filter ให้เจาะจงเฉพาะคาบ/ห้อง/กลุ่มที่ต้องการลบ
                 let whereClause = `
                     WHERE TRIM(STUDY_YEAR) = :1 
                       AND TRIM(STUDY_SEMESTER) = :2 
@@ -728,23 +829,20 @@ const TimetableCrudController = {
                     filterParams.push(cleanGroup);
                 }
 
-                // ดึงรายการ INSTR_GROUP ของแถวที่ตรงกับเงื่อนไขที่จะถูกลบออกมาก่อน
-                let affectedGroups = [];
-                if (cleanGroup !== null && !isNaN(cleanGroup) && cleanGroup > 0) {
-                    affectedGroups = [cleanGroup];
-                } else {
-                    const findGroupSql = `
-                        SELECT DISTINCT INSTR_GROUP
-                        FROM RG_SCHEDULE_CLASS
-                        ${whereClause}
-                    `;
-                    const groupRows = await tx.fetchAll(findGroupSql, filterParams);
-                    affectedGroups = (groupRows || [])
-                        .map(r => Number(r.INSTR_GROUP))
-                        .filter(g => g !== null && !isNaN(g) && g > 0);
+                const findGroupSql = `
+                    SELECT DISTINCT INSTR_GROUP
+                    FROM RG_SCHEDULE_CLASS
+                    ${whereClause}
+                `;
+                const groupRows = await tx.fetchAll(findGroupSql, filterParams);
+                let affectedGroups = (groupRows || [])
+                    .map(r => Number(r.INSTR_GROUP))
+                    .filter(g => g !== null && !isNaN(g) && g > 0);
+
+                if (cleanGroup !== null && !isNaN(cleanGroup) && cleanGroup > 0 && !affectedGroups.includes(cleanGroup)) {
+                    affectedGroups.push(cleanGroup);
                 }
 
-                // 1. สำรอง RG_SCHEDULE_CLASS -> RG_SCHEDULE_CLASS_HIS
                 const hisWhereClause = whereClause.replace(/:(\d+)/g, (_, num) => `:${Number(num) + 1}`);
                 const hisClassSql = `
                     INSERT INTO RG_SCHEDULE_CLASS_HIS (
@@ -777,23 +875,19 @@ const TimetableCrudController = {
                 `;
                 await tx.executeOne(hisClassSql, [user, ...filterParams]);
 
-                // 2. ลบจาก RG_SCHEDULE_CLASS
                 const delClassSql = `
                     DELETE FROM RG_SCHEDULE_CLASS
                     ${whereClause}
                 `;
                 await tx.executeOne(delClassSql, filterParams);
 
-                // 3. สำรองและลบออกจาก RG_SCHEDULE_TEACH และ RG_SCHEDULE_INSTRUCTOR_GROUP (สำหรับทุกกลุ่มที่ไม่มีคลาสอื่นใช้แล้ว)
                 for (const grp of affectedGroups) {
                     const checkRemainingSql = `
                         SELECT COUNT(*) AS CNT
                         FROM RG_SCHEDULE_CLASS
-                        WHERE TRIM(STUDY_YEAR) = :1
-                          AND TRIM(STUDY_SEMESTER) = :2
-                          AND INSTR_GROUP = :3
+                        WHERE INSTR_GROUP = :1
                     `;
-                    const remainingRes = await tx.fetchOne(checkRemainingSql, [cleanYear, cleanSem, grp]);
+                    const remainingRes = await tx.fetchOne(checkRemainingSql, [grp]);
                     const remainingCount = Number(remainingRes?.CNT || 0);
 
                     if (remainingCount === 0) {
@@ -820,38 +914,29 @@ const TimetableCrudController = {
                                 USER_INSERT,
                                 :1
                             FROM RG_SCHEDULE_TEACH
-                            WHERE TRIM(STUDY_YEAR) = :2 
-                              AND TRIM(STUDY_SEMESTER) = :3 
-                              AND TRIM(INSTRUCTOR_GROUP) = :4
+                            WHERE TRIM(INSTRUCTOR_GROUP) = :2
                         `;
                         try {
-                            await tx.executeOne(hisTeachSql, [user, cleanYear, cleanSem, grp.toString()]);
+                            await tx.executeOne(hisTeachSql, [user, grp.toString()]);
                         } catch (e) {
                             console.warn('[RG_SCHEDULE_TEACH_HIS backup warning]', e?.message);
                         }
 
                         const delTeachSql = `
                             DELETE FROM RG_SCHEDULE_TEACH
-                            WHERE TRIM(STUDY_YEAR) = :1 
-                              AND TRIM(STUDY_SEMESTER) = :2 
-                              AND TRIM(INSTRUCTOR_GROUP) = :3
+                            WHERE TRIM(INSTRUCTOR_GROUP) = :1
                         `;
-                        await tx.executeOne(delTeachSql, [cleanYear, cleanSem, grp.toString()]);
+                        await tx.executeOne(delTeachSql, [grp.toString()]);
 
-                        // ตรวจสอบว่าใน RG_SCHEDULE_CLASS ทั้งหมดไม่มีใครใช้ grp นี้อีกแล้ว จึงลบออกจาก master table
-                        const checkGlobalClass = await tx.fetchOne(
-                            `SELECT COUNT(*) AS CNT FROM RG_SCHEDULE_CLASS WHERE INSTR_GROUP = :1`,
-                            [grp]
-                        );
-                        if (Number(checkGlobalClass?.CNT || 0) === 0) {
-                            try {
-                                await tx.executeOne(`DELETE FROM RG_SCHEDULE_INSTRUCTOR_GROUP WHERE INSTR_GROUP = :1`, [grp]);
-                            } catch (e) {
-                                console.warn('[RG_SCHEDULE_INSTRUCTOR_GROUP delete notice]', e?.message);
-                            }
+                        try {
+                            await tx.executeOne(`DELETE FROM RG_SCHEDULE_INSTRUCTOR_GROUP WHERE INSTR_GROUP = :1`, [grp]);
+                        } catch (e) {
+                            console.warn('[RG_SCHEDULE_INSTRUCTOR_GROUP delete notice]', e?.message);
                         }
                     }
                 }
+
+                await cleanupOrphanInstructorGroups(tx);
             });
 
             return res.status(200).json({
@@ -866,7 +951,6 @@ const TimetableCrudController = {
         }
     },
 
-    // 7. ลบข้อมูลตารางสอนแบบกลุ่ม (Bulk Delete)
     async deleteBulkScheduleClasses(req, res) {
         try {
             const { studyYear, studySemester, items, userInsert } = req.body;
@@ -919,7 +1003,6 @@ const TimetableCrudController = {
                         filterParams.push(cleanGroup);
                     }
 
-                    // 1. สำรอง RG_SCHEDULE_CLASS_HIS
                     const hisWhereClause = whereClause.replace(/:(\d+)/g, (_, num) => `:${Number(num) + 1}`);
                     const hisClassSql = `
                         INSERT INTO RG_SCHEDULE_CLASS_HIS (
@@ -934,21 +1017,19 @@ const TimetableCrudController = {
                     `;
                     await tx.executeOne(hisClassSql, [user, ...filterParams]);
 
-                    // 2. ลบ RG_SCHEDULE_CLASS
                     const delClassSql = `
                         DELETE FROM RG_SCHEDULE_CLASS
                         ${whereClause}
                     `;
                     await tx.executeOne(delClassSql, filterParams);
 
-                    // 3. สำรองและลบ RG_SCHEDULE_TEACH (เฉพาะเมื่อไม่มีคลาสอื่นใช้ INSTR_GROUP นี้แล้ว)
                     if (cleanGroup !== null && !isNaN(cleanGroup) && cleanGroup > 0) {
                         const checkRemainingSql = `
                             SELECT COUNT(*) AS CNT
                             FROM RG_SCHEDULE_CLASS
-                            WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND INSTR_GROUP = :3
+                            WHERE INSTR_GROUP = :1
                         `;
-                        const remainingRes = await tx.fetchOne(checkRemainingSql, [cleanYear, cleanSem, cleanGroup]);
+                        const remainingRes = await tx.fetchOne(checkRemainingSql, [cleanGroup]);
                         if (Number(remainingRes?.CNT || 0) === 0) {
                             const hisTeachSql = `
                                 INSERT INTO RG_SCHEDULE_TEACH_HIS (
@@ -959,30 +1040,31 @@ const TimetableCrudController = {
                                     STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_GROUP, INSTRUCTOR_CODE, INSTRUCTOR_ORD,
                                     INSERT_DATE, SYSDATE, USER_INSERT, :1
                                 FROM RG_SCHEDULE_TEACH
-                                WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3 AND TRIM(INSTRUCTOR_GROUP) = :4
+                                WHERE TRIM(INSTRUCTOR_GROUP) = :2
                             `;
                             try {
-                                await tx.executeOne(hisTeachSql, [user, cleanYear, cleanSem, cleanGroup.toString()]);
+                                await tx.executeOne(hisTeachSql, [user, cleanGroup.toString()]);
                             } catch (e) {
                                 console.warn('[RG_SCHEDULE_TEACH_HIS bulk warning]', e?.message);
                             }
 
                             const delTeachSql = `
                                 DELETE FROM RG_SCHEDULE_TEACH
-                                WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(INSTRUCTOR_GROUP) = :3
+                                WHERE TRIM(INSTRUCTOR_GROUP) = :1
                             `;
-                            await tx.executeOne(delTeachSql, [cleanYear, cleanSem, cleanGroup.toString()]);
+                            await tx.executeOne(delTeachSql, [cleanGroup.toString()]);
 
                             try {
                                 await tx.executeOne(`DELETE FROM RG_SCHEDULE_INSTRUCTOR_GROUP WHERE INSTR_GROUP = :1`, [cleanGroup]);
                             } catch (e) {
-                                // ignore
                             }
                         }
                     }
 
                     deletedCount++;
                 }
+
+                await cleanupOrphanInstructorGroups(tx);
             });
 
             return res.status(200).json({
@@ -998,7 +1080,6 @@ const TimetableCrudController = {
         }
     },
 
-    // 8. อัปเดต วัน/เวลาเรียน (ย้ายช่องตารางสอน Drag & Drop)
     async updateScheduleSlots(req, res) {
         try {
             const { studyYear, studySemester, moves, userInsert } = req.body;
@@ -1032,7 +1113,6 @@ const TimetableCrudController = {
                         continue;
                     }
 
-                    // ดึง ROOM_CODE และ INSTR_GROUP ของวิชาที่จะย้าย
                     const curClassSql = `
                         SELECT TRIM(ROOM_CODE) AS ROOM_CODE, INSTR_GROUP
                         FROM RG_SCHEDULE_CLASS
@@ -1055,7 +1135,6 @@ const TimetableCrudController = {
                         continue;
                     }
 
-                    // ตรวจสอบการชนห้องเรียนในช่องเป้าหมาย (newDay, newTime) ของ targetRoom
                     if (targetRoom && targetRoom !== '-') {
                         const checkTargetSql = `
                             SELECT TRIM(COURSE_NO) AS COURSE_NO
@@ -1072,7 +1151,6 @@ const TimetableCrudController = {
                         for (const tc of targetConflicts) {
                             const targetCourseNo = (tc.COURSE_NO || '').trim().toUpperCase();
 
-                            // หากวิชาเป้าหมายนี้กำลังจะถูกย้ายออกจากช่องนี้ในชุด moves เดียวกัน (กรณีสลับวิชา / Swap) ให้ถือว่าไม่ชน
                             const isTargetBeingMovedAway = moves.some((otherMove) => {
                                 const oCourseNo = (otherMove.courseNo || '').toString().trim().toUpperCase();
                                 const oOldDay = Number(otherMove.oldDayCode);
@@ -1090,7 +1168,6 @@ const TimetableCrudController = {
                                 continue;
                             }
 
-                            // ตรวจสอบว่าเป็นวิชาคู่กันหรือไม่
                             const pairSql = `
                                 SELECT COUNT(*) AS CNT
                                 FROM RG_SCHEDULE_PAIR_COURSE p1
@@ -1106,7 +1183,6 @@ const TimetableCrudController = {
                         }
                     }
 
-                    // ดึงรายชื่ออาจารย์ผู้สอนของวิชานี้เพื่อตรวจสอบความพร้อมสอนและการชนกันของตารางสอน
                     let instructorsOfClass = [];
                     if (actualInstrGroup !== null && !isNaN(actualInstrGroup)) {
                         const instSql = `
@@ -1126,7 +1202,6 @@ const TimetableCrudController = {
                         new Set(instructorsOfClass.map((i) => (i.INSTRUCTOR_CODE || '').trim()).filter(Boolean))
                     );
 
-                    // 1. ตรวจสอบว่าอาจารย์ติดสอนในระบบส่วนกลาง (มร.30 Collision Check)
                     if (uniqueTeacherCodes.length > 0) {
                         const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
                         const timeFlag = isSummer ? '2' : '1';
@@ -1220,7 +1295,6 @@ const TimetableCrudController = {
                         }
                     }
 
-                    // 2. ตรวจสอบว่าอาจารย์ติดสอนวิชาอื่นในวัน/เวลาเป้าหมายหรือไม่ (Instructor Collision Check)
                     if (uniqueTeacherCodes.length > 0) {
                         const instPlaceholders = uniqueTeacherCodes.map((_, idx) => `:${idx + 6}`).join(',');
                         const instCheckSql = `
@@ -1249,7 +1323,6 @@ const TimetableCrudController = {
                             for (const bt of busyTeachers) {
                                 const busyCourseNo = (bt.COURSE_NO || '').trim().toUpperCase();
 
-                                // หากวิชาที่อาจารย์สอนชนอยู่นี้กำลังจะถูกย้ายออกจากช่องนี้ในชุด moves เดียวกัน ให้ถือว่าไม่ชน
                                 const isBusyBeingMovedAway = moves.some((otherMove) => {
                                     const oCourseNo = (otherMove.courseNo || '').toString().trim().toUpperCase();
                                     const oOldDay = Number(otherMove.oldDayCode);
@@ -1261,7 +1334,6 @@ const TimetableCrudController = {
                                     continue;
                                 }
 
-                                // ตรวจสอบว่าเป็นวิชาคู่กันหรือไม่
                                 const pairSql = `
                                     SELECT COUNT(*) AS CNT
                                     FROM RG_SCHEDULE_PAIR_COURSE p1
@@ -1280,7 +1352,6 @@ const TimetableCrudController = {
                         }
                     }
 
-                    // 1. สำรองข้อมูลเดิมลง RG_SCHEDULE_CLASS_HIS
                     const hisClassSql = `
                         INSERT INTO RG_SCHEDULE_CLASS_HIS (
                             STUDY_YEAR,
@@ -1316,7 +1387,6 @@ const TimetableCrudController = {
                     `;
                     await tx.executeOne(hisClassSql, [user, cleanYear, cleanSem, courseNo, oldDay, oldTime]);
 
-                    // 2. Phase 1: อัปเดต DAY_CODE, TIME_CODE เป็นค่าติดลบชั่วคราว (-newTime) เพื่อป้องกันการชน Unique Constraint ขณะเลื่อนคาบต่อเนื่อง
                     let updateSql = `
                         UPDATE RG_SCHEDULE_CLASS
                         SET DAY_CODE = :1,
@@ -1341,7 +1411,6 @@ const TimetableCrudController = {
                     updatedCount++;
                 }
 
-                // Phase 2: ปรับค่า TIME_CODE ที่เป็นค่าติดลบชั่วคราวกลับมาเป็นค่าบวกจริง
                 if (updatedCount > 0) {
                     await tx.executeOne(`
                         UPDATE RG_SCHEDULE_CLASS

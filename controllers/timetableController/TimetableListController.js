@@ -10,7 +10,6 @@ const SelectModel = require('../../models/db/SelectModel');
  *  - getCoursesByPrefix   → GET /timetable/search-ugb
  */
 const TimetableListController = {
-    // 1. ดึงรายการตารางสอนที่จัดแล้วใน RG_SCHEDULE_CLASS และ RG_SCHEDULE_TEACH
     async listScheduleClasses(req, res) {
         try {
             const { year, semester, dayCode, roomCode, search } = req.query;
@@ -102,7 +101,6 @@ const TimetableListController = {
                 });
             }
 
-            // ดึงรายชื่ออาจารย์ผู้สอนจาก RG_SCHEDULE_TEACH
             const teachSql = `
                 SELECT 
                     TRIM(rt.STUDY_YEAR) AS STUDY_YEAR,
@@ -123,7 +121,6 @@ const TimetableListController = {
             const teachRes = await SelectModel.findAll(res, teachSql, [targetYear, targetSem]);
             const teachRows = teachRes.rows ?? [];
 
-            // Group teachers by INSTRUCTOR_GROUP (deduplicate by INSTRUCTOR_CODE)
             const teachersByGroup = {};
             teachRows.forEach((t) => {
                 const grp = t.INSTRUCTOR_GROUP?.toString() || '';
@@ -142,7 +139,6 @@ const TimetableListController = {
                 }
             });
 
-            // ดึงข้อมูลวิชาคู่จาก RG_SCHEDULE_PAIR_COURSE
             let pairRows = [];
             try {
                 const pairSql = `
@@ -174,7 +170,6 @@ const TimetableListController = {
                 console.error('[listScheduleClasses pairSql error]', pErr);
             }
 
-            // จัดกลุ่มวิชาคู่ตาม PAIR_COURSE_GROUP_ID
             const pairGroupByGroupId = {};
             pairRows.forEach((pr) => {
                 const gId = pr.PAIR_COURSE_GROUP_ID;
@@ -182,7 +177,6 @@ const TimetableListController = {
                 pairGroupByGroupId[gId].push(pr);
             });
 
-            // สร้าง Map จาก COURSE_NO -> รายการวิชาคู่อื่นๆ ในกลุ่มเดียวกัน
             const pairedCoursesByCourseNo = {};
             Object.keys(pairGroupByGroupId).forEach((gId) => {
                 const groupCourses = pairGroupByGroupId[gId];
@@ -212,7 +206,6 @@ const TimetableListController = {
                 });
             });
 
-            // Map teachers and paired courses into class objects
             const results = classes.map((c) => {
                 const cNo = (c.COURSE_NO || '').trim().toUpperCase();
                 const pairedList = pairedCoursesByCourseNo[cNo] || [];
@@ -238,7 +231,6 @@ const TimetableListController = {
         }
     },
 
-    // 2. ดึงข้อมูลตัวเลือก วัน, เวลา, ห้องเรียน และอาจารย์จาก UGB_RU30
     async getRu30Options(req, res) {
         try {
             const { year, semester, courseNo } = req.query;
@@ -288,7 +280,6 @@ const TimetableListController = {
             const result = await SelectModel.findAll(res, sql, [cleanCourse]);
             const rows = result.rows ?? [];
 
-            // Group into distinct slots with deduplicated instructor list
             const slotMap = new Map();
             rows.forEach((r) => {
                 const key = `${r.DAY_CODE}_${r.TIME_CODE}_${r.ROOM_CODE || r.BUILDING_CODE || ''}`;
@@ -328,7 +319,6 @@ const TimetableListController = {
         }
     },
 
-    // 3. Alphabetical course search from RG_SCHEDULE_COURSE (A-Z -> Prefixes -> Courses)
     async getFirstLetters(req, res) {
         try {
             const { year, semester } = req.query;

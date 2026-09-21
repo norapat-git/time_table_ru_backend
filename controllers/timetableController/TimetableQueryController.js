@@ -35,7 +35,6 @@ function formatMilitaryTime(tm) {
  *  - recommendSlots                → GET /timetable/recommend-slots
  */
 const TimetableQueryController = {
-    // 4. ดึงรายชื่ออาจารย์ที่เปิดสอนในปีภาคนี้จาก RG_SCHEDULE_INSTRUCTOR + UGB_INSTRUCTOR + UGB_RANK
     async getAllInstructors(req, res) {
         try {
             const { year, semester } = req.query;
@@ -78,7 +77,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 3.9 ตรวจสอบวันและเวลาที่ว่างตรงกันของอาจารย์ที่เลือก (Instructor Availability Matrix)
     async getInstructorAvailability(req, res) {
         try {
             const { year, semester, instructorCodes, courseNo } = req.query;
@@ -106,7 +104,6 @@ const TimetableQueryController = {
                 return res.status(200).json({ success: true, totalInstructors: 0, slots: [], commonFreeSlots: [] });
             }
 
-            // 1. ดึงวันเรียนทั้งหมดจาก UGB_DAY_SCHEDULE (วันจันทร์ - อาทิตย์ รหัส 1-7 เท่านั้น ไม่เอา 0 หรือวันควบ)
             let days = [];
             try {
                 const daySql = `
@@ -162,7 +159,6 @@ const TimetableQueryController = {
                 ];
             }
 
-            // 2. ดึงเวลาเรียนของตารางสอนจาก RG_SCHEDULE_TIME (ภาค 1-2 ใช้ TIME_FLAG='1', ภาค 3/Summer ใช้ TIME_FLAG='2')
             const isSummer = targetSem === '3' || targetSem.toUpperCase() === 'S';
             const timeFlag = isSummer ? '2' : '1';
 
@@ -219,7 +215,6 @@ const TimetableQueryController = {
                 console.error('[getInstructorAvailability timeSql error]', timeErr);
             }
 
-            // 3. ดึงคาบสอนที่อาจารย์มีสอนอยู่แล้วในระบบส่วนกลาง มร.30 (UGB_RU30 JOIN UGB_TIME_SCHEDULE)
             let ru30Rows = [];
             try {
                 const inPlaceholders = uniqueCodes.map((_, i) => `:${i + 3}`).join(', ');
@@ -253,7 +248,6 @@ const TimetableQueryController = {
                 if (ru30Res && ru30Res.rows && ru30Res.rows.length > 0) {
                     ru30Rows = ru30Res.rows;
                 } else {
-                    // Fallback to all semesters in RU30 if specific year/sem has no records
                     const fallbackInPlaceholders = uniqueCodes.map((_, i) => `:${i + 1}`).join(', ');
                     const fallbackRu30Sql = `
                         SELECT DISTINCT 
@@ -287,7 +281,6 @@ const TimetableQueryController = {
                 console.error('[getInstructorAvailability ru30Sql error]', ru30Err);
             }
 
-            // 4. ดึงคาบสอนที่อาจารย์เหล่านี้ถูกจัดตารางสอนวิชาอื่นไปแล้วในระบบคณะ (จาก RG_SCHEDULE_CLASS + RG_SCHEDULE_TEACH)
             let busyRows = [];
             try {
                 const inPlaceholders = uniqueCodes.map((_, i) => `:${i + 3}`).join(', ');
@@ -324,12 +317,11 @@ const TimetableQueryController = {
                 console.error('[getInstructorAvailability busySql error]', busyErr);
             }
 
-            // จัดกลุ่มรายการติดสอนตาม day_time (ยกเว้นวิชาเดียวกันที่กำลังเปิดแก้ไข)
             const busyMap = {};
             busyRows.forEach((b) => {
                 const bCourseNo = (b.COURSE_NO || '').trim().toUpperCase();
                 if (currentCourseNo && bCourseNo === currentCourseNo) {
-                    return; // ข้ามวิชาตัวเองที่กำลังเปิดแก้ไข ไม่นำมานับว่าติดสอนชนกับตัวเอง
+                    return;
                 }
                 const key = `${b.DAY_CODE}_${b.TIME_CODE}`;
                 if (!busyMap[key]) busyMap[key] = [];
@@ -341,7 +333,6 @@ const TimetableQueryController = {
                 });
             });
 
-            // 5. คำนวณ Slot Matrix ทั้งหมด โดยเปรียบเทียบช่วงเวลาชนกับ มร.30 และ ตารางในคณะ
             const allSlots = [];
             const commonFreeSlots = [];
 
@@ -350,7 +341,6 @@ const TimetableQueryController = {
                     const key = `${d.dayCode}_${t.timeCode}`;
                     const classBusyList = busyMap[key] || [];
 
-                    // ตรวจสอบว่าในคาบเวลานี้ของ RG_SCHEDULE_TIME ชนกับเวลาที่อาจารย์มีสอนใน มร.30 (UGB_RU30) หรือไม่
                     const ru30BusyList = [];
                     for (const r of ru30Rows) {
                         if (Number(r.DAY_CODE) === d.dayCode && isTimeOverlapping(t.timeStart, t.timeEnd, r.RU30_START, r.RU30_END)) {
@@ -384,7 +374,7 @@ const TimetableQueryController = {
                         timeLabel: t.label,
                         timeStart: t.timeStart,
                         timeEnd: t.timeEnd,
-                        isRu30Available: !isBusyInRu30, // backward compatible: true หากไม่ติดสอน มร.30
+                        isRu30Available: !isBusyInRu30,
                         isBusyInRu30: isBusyInRu30,
                         ru30BusyCount: ru30BusyList.length,
                         ru30BusyList: ru30BusyList,
@@ -419,7 +409,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 3.10 ตรวจสอบอาจารย์ที่สามารถสอนได้ในวันและคาบเวลาที่เลือก (Slot Available Instructors)
     async getSlotAvailableInstructors(req, res) {
         try {
             const { year, semester, dayCode, timeCodes, courseNo } = req.query;
@@ -453,7 +442,6 @@ const TimetableQueryController = {
                 });
             }
 
-            // 1. ดึงอาจารย์ทั้งหมดในปี/ภาคนี้
             const instSql = `
                 SELECT 
                     TRIM(ri.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
@@ -480,7 +468,6 @@ const TimetableQueryController = {
                 });
             }
 
-            // 2. ดึงรายการที่อาจารย์ติดสอนในวันและคาบเหล่านี้ (จาก RG_SCHEDULE_CLASS + RG_SCHEDULE_TEACH)
             const timeInClause = targetTimes.map((_, idx) => `:${idx + 4}`).join(', ');
             const busyParams = [targetYear, targetSem, targetDay, ...targetTimes];
             const busySql = `
@@ -511,7 +498,7 @@ const TimetableQueryController = {
             busyRows.forEach(b => {
                 const bCourse = (b.COURSE_NO || '').trim().toUpperCase();
                 if (currentCourseNo && bCourse === currentCourseNo) {
-                    return; // ข้ามวิชาตัวเองที่กำลังแก้ไข ไม่ถือว่าชนกับตัวเอง
+                    return;
                 }
                 const code = b.INSTRUCTOR_CODE;
                 if (!instructorBusyMap[code]) {
@@ -525,7 +512,6 @@ const TimetableQueryController = {
                 });
             });
 
-            // 3. ดึงเวลาของคาบเป้าหมายจาก RG_SCHEDULE_TIME (timeFlag = 2 หากเป็นภาค 3, นอกนั้น 1)
             const isSummer = targetSem === '3' || targetSem.toUpperCase() === 'S';
             const timeFlag = isSummer ? '2' : '1';
             let targetSlotTimes = [];
@@ -546,7 +532,6 @@ const TimetableQueryController = {
                 console.error('[getSlotAvailableInstructors timeSql error]', tErr);
             }
 
-            // Fallback ถ้าไม่มีข้อมูลใน RG_SCHEDULE_TIME
             if (targetSlotTimes.length === 0) {
                 const defaultTimes = timeFlag === '2'
                     ? { 1: ['0835', '0950'], 2: ['0955', '1110'], 3: ['1115', '1230'], 4: ['1235', '1350'], 5: ['1355', '1510'] }
@@ -558,7 +543,6 @@ const TimetableQueryController = {
                 }));
             }
 
-            // 4. ดึง RU30 ของอาจารย์ทั้งหมดในปี/ภาคนี้ พร้อมเวลาจาก UGB_TIME_SCHEDULE
             let ru30Rows = [];
             try {
                 const inInstP = allCodes.map((_, i) => `:${i + 4}`).join(', ');
@@ -612,7 +596,6 @@ const TimetableQueryController = {
                 console.error('[getSlotAvailableInstructors ru30 error]', ru30Err);
             }
 
-            // คำนวณความขัดแย้งเวลาของ มร.30 กับ targetSlotTimes
             const instRu30BusyMap = {};
             ru30Rows.forEach(r => {
                 const code = (r.INSTRUCTOR_CODE || '').trim();
@@ -633,7 +616,6 @@ const TimetableQueryController = {
                 }
             });
 
-            // 5. สรุปสถานะอาจารย์แต่ละท่าน
             const availableCodes = [];
             const busyCodes = [];
             const instructorsStatus = {};
@@ -699,7 +681,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 4.0 ดึงข้อมูลวันเรียนจากตาราง UGB_DAY_SCHEDULE (วันจันทร์ - อาทิตย์ รหัส 1-7, ไม่รวมตัวเลือกหลายวันควบ)
     async getDayOptions(req, res) {
         try {
             const sql = `
@@ -739,7 +720,6 @@ const TimetableQueryController = {
                 };
             });
 
-            // If empty, return standard fallback 1-7
             const finalRows = rows.length > 0 ? rows : [
                 { code: 1, label: 'วันจันทร์', shortLabel: 'จันทร์', colorClass: 'day-mon' },
                 { code: 2, label: 'วันอังคาร', shortLabel: 'อังคาร', colorClass: 'day-tue' },
@@ -759,8 +739,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 4.1 ดึงข้อมูลช่วงเวลาเรียนมาตรฐาน 7 คาบ (คาบที่ 1 - 7)
-    // 10. ดึงคาบเวลามาตรฐานจาก RG_SCHEDULE_TIME (แยกภาคปกติ TIME_FLAG='1' 6 คาบ, ภาคฤดูร้อน TIME_FLAG='2' 5 คาบ)
     async getTimeSlots(req, res) {
         try {
             const { flag, semester } = req.query;
@@ -786,7 +764,6 @@ const TimetableQueryController = {
             const result = await SelectModel.findAll(res, sql, [targetFlag]);
             let dbRows = (result && result.rows) ? result.rows : [];
 
-            // Fallback เผื่อตาราง RG_SCHEDULE_TIME ใน DB ไม่มีข้อมูล
             if (dbRows.length === 0) {
                 if (targetFlag === '2') {
                     dbRows = [
@@ -833,7 +810,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 4.2 ดึงรายการห้องเรียนจาก RG_SCHEDULE_ROOM_DETAIL
     async getRoomOptions(req, res) {
         try {
             const sql = `
@@ -869,7 +845,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 4.3 ดึงรายการห้องเรียนที่มีตารางสอนจริงใน RG_SCHEDULE_CLASS (พร้อม Fallback RG_SCHEDULE_ROOM_DETAIL)
     async getScheduledRooms(req, res) {
         try {
             const { year, semester } = req.query;
@@ -885,7 +860,6 @@ const TimetableQueryController = {
                 }
             }
 
-            // 1. Query recently added rooms from RG_SCHEDULE_CLASS joined with RG_SCHEDULE_ROOM_DETAIL
             let recentSql = `
                 SELECT 
                     TRIM(rc.ROOM_CODE) AS ROOM_CODE,
@@ -916,7 +890,6 @@ const TimetableQueryController = {
                 };
             }).filter(r => r.value);
 
-            // 2. Fallback to all rooms from RG_SCHEDULE_ROOM_DETAIL if needed
             const roomSet = new Set();
             const results = [...recentRooms];
             results.forEach(r => roomSet.add(r.value));
@@ -942,7 +915,6 @@ const TimetableQueryController = {
                 }
             });
 
-            // Sorted list for dropdown
             const sortedResults = [...results].sort((a, b) => a.value.localeCompare(b.value, undefined, { numeric: true, sensitivity: 'base' }));
 
             return res.status(200).json({
@@ -960,7 +932,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 8. ตรวจจับการชน/ซ้อนของอาจารย์ (Instructor Overlap Conflict Check)
     async checkInstructorConflicts(req, res) {
         try {
             const { year, semester, dayCode, timeCode, instructorCodes, excludeCourseNo } = req.query;
@@ -1048,7 +1019,6 @@ const TimetableQueryController = {
         }
     },
 
-    // 9. ระบบแนะนำคาบและห้องว่างที่เหมาะสม (Smart Slot Recommender)
     async recommendSlots(req, res) {
         try {
             const { year, semester, instructorCodes, preferredRoom } = req.query;
@@ -1066,7 +1036,6 @@ const TimetableQueryController = {
                 : [];
             const uniqueCodes = Array.from(new Set(rawCodes));
 
-            // 1. ดึงช่วงเวลาเรียนจาก RG_SCHEDULE_TIME (timeFlag = 2 หากเป็นภาค 3, นอกนั้น 1)
             const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
             const timeFlag = isSummer ? '2' : '1';
             let timeSlots = [];
@@ -1111,7 +1080,6 @@ const TimetableQueryController = {
                 console.error('[recommendSlots timeSql error]', tErr);
             }
 
-            // 2. ดึงคาบสอนที่อาจารย์มีสอนอยู่แล้วในระบบส่วนกลาง มร.30 (UGB_RU30)
             let ru30Rows = [];
             if (uniqueCodes.length > 0) {
                 try {
@@ -1157,7 +1125,6 @@ const TimetableQueryController = {
                 }
             }
 
-            // 3. ดึงคาบที่อาจารย์ติดสอนวิชาอื่นในระบบคณะแล้ว (จาก RG_SCHEDULE_CLASS + RG_SCHEDULE_TEACH)
             const busySlots = new Set();
             if (uniqueCodes.length > 0) {
                 const inPlaceholders = uniqueCodes.map((_, i) => `:${i + 3}`).join(', ');
@@ -1178,7 +1145,6 @@ const TimetableQueryController = {
                 });
             }
 
-            // 4. ดึงห้องเรียนทั้งหมดจาก RG_SCHEDULE_ROOM_DETAIL
             let availableRoomsMaster = [];
             try {
                 const allRoomsSql = `
@@ -1204,7 +1170,6 @@ const TimetableQueryController = {
                 console.error('[recommendSlots rooms master error]', rErr);
             }
 
-            // Fallback ถ้าใน RG_SCHEDULE_ROOM_DETAIL ไม่มีข้อมูล
             if (availableRoomsMaster.length === 0) {
                 const fbSql = `
                     SELECT DISTINCT TRIM(ROOM_CODE) AS ROOM_CODE
@@ -1226,7 +1191,6 @@ const TimetableQueryController = {
                 }
             }
 
-            // 5. ดึงคาบที่แต่ละห้องถูกจองแล้วในปี/ภาคนี้
             const roomOccupiedSql = `
                 SELECT TRIM(ROOM_CODE) AS ROOM_CODE, DAY_CODE, TIME_CODE, TRIM(COURSE_NO) AS COURSE_NO
                 FROM RG_SCHEDULE_CLASS
@@ -1246,23 +1210,19 @@ const TimetableQueryController = {
 
             const recommendations = [];
 
-            // ตรวจสอบวันจันทร์ - อาทิตย์ และคาบจาก RG_SCHEDULE_TIME
             for (let day = 1; day <= 7; day++) {
                 for (const tSlot of timeSlots) {
                     const time = tSlot.timeCode;
                     const slotKey = `${day}_${time}`;
 
-                    // ก. ตรวจสอบว่าอาจารย์ท่านใดท่านหนึ่งติดสอนในคณะแล้วหรือไม่
                     if (busySlots.has(slotKey)) continue;
 
-                    // ข. ตรวจสอบว่าอาจารย์ติดสอนในระบบส่วนกลาง มร.30 (ช่วงเวลาคาบนี้ชนกับ มร.30 หรือไม่)
                     const hasRu30Conflict = ru30Rows.some(r =>
                         Number(r.DAY_CODE) === day &&
                         isTimeOverlapping(tSlot.timeStart, tSlot.timeEnd, r.RU30_START, r.RU30_END)
                     );
                     if (hasRu30Conflict) continue;
 
-                    // ค. หาห้องเรียนที่ยังว่างในคาบนี้ (จากห้องทั้งหมดในระบบ)
                     const freeRoomsInSlot = availableRoomsMaster.filter(
                         room => !occupiedMap[`${room.roomCode}_${day}_${time}`]
                     );
@@ -1274,14 +1234,13 @@ const TimetableQueryController = {
                             ? freeRoomsInSlot.find(r => r.roomCode === prefCode)
                             : freeRoomsInSlot[0];
 
-                        // คำนวณคะแนนความเหมาะสม (Priority Score)
                         let score = 0;
                         if (hasPrefRoom) score += 40;
-                        if (time >= 2 && time <= 4) score += 20; // คาบกลางวันเป็นที่นิยม
+                        if (time >= 2 && time <= 4) score += 20;
                         else if (time === 1 || time === 5) score += 10;
                         else score += 5;
 
-                        if (day <= 5) score += 15; // จันทร์ - ศุกร์
+                        if (day <= 5) score += 15;
 
                         recommendations.push({
                             dayCode: day,
@@ -1297,7 +1256,6 @@ const TimetableQueryController = {
                 }
             }
 
-            // เรียงลำดับจากคะแนนมากไปน้อย (คาบที่เหมาะสมที่สุดอยู่บนสุด)
             recommendations.sort((a, b) => b.score - a.score);
 
             return res.status(200).json({

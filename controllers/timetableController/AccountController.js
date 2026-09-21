@@ -5,7 +5,6 @@ const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
 const AccountController = {
-    //ดึงรายชื่อผู้ใช้งานทั้งหมด 
     async listAccounts(req, res) {
         try {
             const sql = `
@@ -28,7 +27,6 @@ const AccountController = {
         }
     },
 
-    //เพิ่มผู้ใช้งานใหม่ 
     async addAccount(req, res) {
         try {
             const { email, thaiName, engName, flag } = req.body;
@@ -42,7 +40,6 @@ const AccountController = {
             const cleanFlag = flag ? flag.toString() : '1';
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // ตรวจสอบว่ามีอีเมลนี้อยู่แล้วหรือไม่
                 const checkSql = `SELECT USER_EMAIL FROM RG_SCHEDULE_ACCOUNT WHERE USER_EMAIL = :1`;
                 const checkResult = await tx.fetchAll(checkSql, [cleanEmail]);
                 if (checkResult && checkResult.length > 0) {
@@ -67,7 +64,6 @@ const AccountController = {
         }
     },
 
-    //แก้ไขข้อมูลผู้ใช้งาน 
     async updateAccount(req, res) {
         try {
             const { email, thaiName, engName, flag } = req.body;
@@ -100,7 +96,6 @@ const AccountController = {
         }
     },
 
-    //ลบผู้ใช้งาน 
     async deleteAccount(req, res) {
         try {
             const email = req.params.email;

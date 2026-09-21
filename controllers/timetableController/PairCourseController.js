@@ -4,7 +4,6 @@ const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
 
 const PairCourseController = {
-    // 1. ดึงรายการวิชาคู่ทั้งหมด (JOIN กับ UGB_COURSE เพื่อเอาชื่อวิชา)
     async listPairCourses(req, res) {
         try {
             const sql = `
@@ -38,7 +37,6 @@ const PairCourseController = {
         }
     },
 
-    // 2. เพิ่มกลุ่มวิชาคู่ใหม่ (ADD GROUP - 2 วิชาขึ้นไป)
     async addPairGroup(req, res) {
         try {
             const { items } = req.body;
@@ -49,7 +47,6 @@ const PairCourseController = {
                 });
             }
 
-            // ตรวจสอบความครบถ้วนของแต่ละรายการ
             for (let i = 0; i < items.length; i++) {
                 const item = items[i];
                 if (!item.courseNo) {
@@ -63,7 +60,6 @@ const PairCourseController = {
             let nextGroupId = 1;
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // คำนวณ PAIR_COURSE_GROUP_ID ถัดไป
                 const maxGroupSql = `
                     SELECT NVL(MAX(PAIR_COURSE_GROUP_ID), 0) + 1 AS NEXT_ID 
                     FROM RG_SCHEDULE_PAIR_COURSE
@@ -71,7 +67,6 @@ const PairCourseController = {
                 const maxRow = await tx.fetchOne(maxGroupSql, []);
                 nextGroupId = Number(maxRow?.NEXT_ID || 1);
 
-                // บันทึกทุกวิชาในกลุ่มด้วย PAIR_COURSE_GROUP_ID เดียวกัน
                 for (const item of items) {
                     const cleanCourse = item.courseNo.toString().trim().toUpperCase();
                     const cleanStartYear = item.startYear ? item.startYear.toString().trim().substring(0, 2) : null;
@@ -106,7 +101,6 @@ const PairCourseController = {
         }
     },
 
-    // 3. ลบกลุ่มวิชาคู่ (DELETE GROUP) -> ย้ายข้อมูลเข้า RG_SCHEDULE_PAIR_COURSE_HIS ก่อนลบ
     async deletePairGroup(req, res) {
         try {
             const { groupId } = req.params;
@@ -117,7 +111,6 @@ const PairCourseController = {
             const cleanGroupId = Number(groupId);
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 1. สำรองข้อมูลเข้า RG_SCHEDULE_PAIR_COURSE_HIS พร้อม INSERT_DATE = SYSDATE
                 const archiveSql = `
                     INSERT INTO RG_SCHEDULE_PAIR_COURSE_HIS 
                     (PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, INSERT_DATE)
@@ -127,7 +120,6 @@ const PairCourseController = {
                 `;
                 await tx.executeOne(archiveSql, [cleanGroupId]);
 
-                // 2. ลบออกจาก RG_SCHEDULE_PAIR_COURSE
                 const deleteSql = `
                     DELETE FROM RG_SCHEDULE_PAIR_COURSE 
                     WHERE PAIR_COURSE_GROUP_ID = :1
@@ -145,7 +137,6 @@ const PairCourseController = {
         }
     },
 
-    // 4. ลบหลายกลุ่มวิชาคู่พร้อมกัน (BULK DELETE) -> ย้ายเข้า HIS ก่อนลบ
     async deletePairGroupsBulk(req, res) {
         try {
             const { groupIds } = req.body;
@@ -160,7 +151,6 @@ const PairCourseController = {
                     const cleanGroupId = Number(gId);
                     if (isNaN(cleanGroupId)) continue;
 
-                    // 1. สำรองข้อมูลเข้า HIS
                     const archiveSql = `
                         INSERT INTO RG_SCHEDULE_PAIR_COURSE_HIS 
                         (PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, INSERT_DATE)
@@ -170,7 +160,6 @@ const PairCourseController = {
                     `;
                     await tx.executeOne(archiveSql, [cleanGroupId]);
 
-                    // 2. ลบออกจาก RG_SCHEDULE_PAIR_COURSE
                     const deleteSql = `
                         DELETE FROM RG_SCHEDULE_PAIR_COURSE 
                         WHERE PAIR_COURSE_GROUP_ID = :1
@@ -191,7 +180,6 @@ const PairCourseController = {
         }
     },
 
-    // 5. แก้ไขกลุ่มวิชาคู่ (UPDATE GROUP) -> สำรองข้อมูลเดิมเข้า HIS ก่อนอัปเดต
     async updatePairGroup(req, res) {
         try {
             const { groupId } = req.params;
@@ -208,7 +196,6 @@ const PairCourseController = {
 
             const cleanGroupId = Number(groupId);
 
-            // ตรวจสอบความครบถ้วนของแต่ละรายการ
             for (let i = 0; i < items.length; i++) {
                 const item = items[i];
                 if (!item.courseNo) {
@@ -220,7 +207,6 @@ const PairCourseController = {
             }
 
             await DbTxModel.withTransaction(async (conn, tx) => {
-                // 1. สำรองข้อมูลเดิมเข้า RG_SCHEDULE_PAIR_COURSE_HIS พร้อม INSERT_DATE = SYSDATE
                 const archiveSql = `
                     INSERT INTO RG_SCHEDULE_PAIR_COURSE_HIS 
                     (PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, INSERT_DATE)
@@ -230,14 +216,12 @@ const PairCourseController = {
                 `;
                 await tx.executeOne(archiveSql, [cleanGroupId]);
 
-                // 2. ลบข้อมูลเดิมออกจาก RG_SCHEDULE_PAIR_COURSE
                 const deleteSql = `
                     DELETE FROM RG_SCHEDULE_PAIR_COURSE 
                     WHERE PAIR_COURSE_GROUP_ID = :1
                 `;
                 await tx.executeOne(deleteSql, [cleanGroupId]);
 
-                // 3. บันทึกข้อมูลใหม่ด้วย PAIR_COURSE_GROUP_ID เดิม
                 for (const item of items) {
                     const cleanCourse = item.courseNo.toString().trim().toUpperCase();
                     const cleanStartYear = item.startYear ? item.startYear.toString().trim().substring(0, 2) : null;

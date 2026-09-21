@@ -23,14 +23,12 @@ const TimetableCrudController = require('./TimetableCrudController');
 const TimetableAutoController = require('./TimetableAutoController');
 
 const TimetableController = {
-    // List & Search
     listScheduleClasses:        TimetableListController.listScheduleClasses.bind(TimetableListController),
     getRu30Options:             TimetableListController.getRu30Options.bind(TimetableListController),
     getFirstLetters:            TimetableListController.getFirstLetters.bind(TimetableListController),
     getPrefixGroups:            TimetableListController.getPrefixGroups.bind(TimetableListController),
     getCoursesByPrefix:         TimetableListController.getCoursesByPrefix.bind(TimetableListController),
 
-    // Query / Lookup
     getAllInstructors:           TimetableQueryController.getAllInstructors.bind(TimetableQueryController),
     getInstructorAvailability:  TimetableQueryController.getInstructorAvailability.bind(TimetableQueryController),
     getSlotAvailableInstructors:TimetableQueryController.getSlotAvailableInstructors.bind(TimetableQueryController),
@@ -41,14 +39,12 @@ const TimetableController = {
     checkInstructorConflicts:   TimetableQueryController.checkInstructorConflicts.bind(TimetableQueryController),
     recommendSlots:             TimetableQueryController.recommendSlots.bind(TimetableQueryController),
 
-    // CRUD
     addScheduleClass:           TimetableCrudController.addScheduleClass.bind(TimetableCrudController),
     updateScheduleClass:        TimetableCrudController.updateScheduleClass.bind(TimetableCrudController),
     deleteScheduleClass:        TimetableCrudController.deleteScheduleClass.bind(TimetableCrudController),
     deleteBulkScheduleClasses:  TimetableCrudController.deleteBulkScheduleClasses.bind(TimetableCrudController),
     updateScheduleSlots:        TimetableCrudController.updateScheduleSlots.bind(TimetableCrudController),
 
-    // Auto Scheduling
     cloneSemester:              TimetableAutoController.cloneSemester.bind(TimetableAutoController),
     autoScheduleSolve:          TimetableAutoController.autoScheduleSolve.bind(TimetableAutoController),
     autoScheduleApply:          TimetableAutoController.autoScheduleApply.bind(TimetableAutoController),
