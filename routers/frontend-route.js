@@ -72,6 +72,10 @@ router.get("/timetable/instructor-availability", TimetableController.getInstruct
 router.get("/timetable/slot-available-instructors", TimetableController.getSlotAvailableInstructors);
 router.get("/timetable/days", TimetableController.getDayOptions);
 router.get("/timetable/times", TimetableController.getTimeSlots);
+router.get("/timetable/reference-room-schedule", TimetableController.getReferenceRoomSchedule);
+router.post("/timetable/clone-semester", TimetableController.cloneSemester);
+router.post("/timetable/copy-classes", TimetableController.copySelectedClasses);
+router.post("/timetable/copy-single-class", TimetableController.copySingleClass);
 router.post("/timetable/add", TimetableController.addScheduleClass);
 router.post("/timetable/delete", TimetableController.deleteScheduleClass);
 router.post("/timetable/delete-bulk", TimetableController.deleteBulkScheduleClasses);

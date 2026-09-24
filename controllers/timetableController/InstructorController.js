@@ -2,14 +2,7 @@ const SelectModel = require('../../models/db/SelectModel');
 const InsertModel = require('../../models/db/InsertModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
-
-function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
-    if (!raw) return defaultVal;
-    const str = raw.toString().trim();
-    if (!str) return defaultVal;
-    const name = str.split('@')[0].trim();
-    return name || defaultVal;
-}
+const { sanitizeUsername } = require('../../utils/timetableUtils');
 
 const InstructorController = {
     async listScheduleInstructors(req, res) {
@@ -222,7 +215,7 @@ const InstructorController = {
                     const insertSql = `
                         INSERT INTO RG_SCHEDULE_INSTRUCTOR (
                             STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE, INSERT_DATE, USER_INSERT
-                        ) VALUES (:1, :2, :3, SYSDATE, :4)
+                        ) VALUES (:1, :2, :3, (SYSDATE + 7/24), :4)
                     `;
                     await tx.executeOne(insertSql, [cleanYear, cleanSem, code, cleanUser]);
                 }
@@ -290,7 +283,7 @@ const InstructorController = {
                     SELECT 
                         STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
                         INSERT_DATE, USER_INSERT,
-                        SYSDATE, :1
+                        (SYSDATE + 7/24), :1
                     FROM RG_SCHEDULE_INSTRUCTOR
                     WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3 AND TRIM(INSTRUCTOR_CODE) = :4
                 `;
@@ -362,7 +355,7 @@ const InstructorController = {
                         SELECT 
                             STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
                             INSERT_DATE, USER_INSERT,
-                            SYSDATE, :1
+                            (SYSDATE + 7/24), :1
                         FROM RG_SCHEDULE_INSTRUCTOR
                         WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3 AND TRIM(INSTRUCTOR_CODE) = :4
                     `;

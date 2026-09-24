@@ -38,14 +38,17 @@ const TimetableController = {
     getScheduledRooms:          TimetableQueryController.getScheduledRooms.bind(TimetableQueryController),
     checkInstructorConflicts:   TimetableQueryController.checkInstructorConflicts.bind(TimetableQueryController),
     recommendSlots:             TimetableQueryController.recommendSlots.bind(TimetableQueryController),
+    getReferenceRoomSchedule:   TimetableQueryController.getReferenceRoomSchedule.bind(TimetableQueryController),
 
     addScheduleClass:           TimetableCrudController.addScheduleClass.bind(TimetableCrudController),
     updateScheduleClass:        TimetableCrudController.updateScheduleClass.bind(TimetableCrudController),
     deleteScheduleClass:        TimetableCrudController.deleteScheduleClass.bind(TimetableCrudController),
     deleteBulkScheduleClasses:  TimetableCrudController.deleteBulkScheduleClasses.bind(TimetableCrudController),
     updateScheduleSlots:        TimetableCrudController.updateScheduleSlots.bind(TimetableCrudController),
+    copySingleClass:            TimetableCrudController.copySingleClass.bind(TimetableCrudController),
 
     cloneSemester:              TimetableAutoController.cloneSemester.bind(TimetableAutoController),
+    copySelectedClasses:        TimetableAutoController.copySelectedClasses.bind(TimetableAutoController),
     autoScheduleSolve:          TimetableAutoController.autoScheduleSolve.bind(TimetableAutoController),
     autoScheduleApply:          TimetableAutoController.autoScheduleApply.bind(TimetableAutoController),
 };

@@ -2,14 +2,7 @@ const SelectModel = require('../../models/db/SelectModel');
 const InsertModel = require('../../models/db/InsertModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
-
-function sanitizeUsername(raw, defaultVal = 'ADMIN') {
-    if (!raw) return defaultVal;
-    const str = raw.toString().trim();
-    if (!str) return defaultVal;
-    const name = str.split('@')[0].trim();
-    return name || defaultVal;
-}
+const { sanitizeUsername } = require('../../utils/timetableUtils');
 
 const CurriculumController = {
     async getFaculties(req, res) {
@@ -257,7 +250,7 @@ const CurriculumController = {
                     const insertSql = `
                         INSERT INTO RG_SCHEDULE_CURRICULUM 
                         (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, USER_INSERT)
-                        VALUES (:1, :2, :3, :4, :5, :6, :7, SYSDATE, :8)
+                        VALUES (:1, :2, :3, :4, :5, :6, :7, (SYSDATE + 7/24), :8)
                     `;
                     await tx.executeOne(insertSql, [
                         cleanFac,
@@ -319,7 +312,7 @@ const CurriculumController = {
                 const archiveSql = `
                     INSERT INTO RG_SCHEDULE_CURRICULUM_HIS 
                     (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS)
-                    SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, SYSDATE, USER_INSERT, :1
+                    SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, (SYSDATE + 7/24), USER_INSERT, :1
                     FROM RG_SCHEDULE_CURRICULUM
                     WHERE TRIM(FACULTY_NO) = :2 
                       AND TRIM(GROUP_NO) = :3 
@@ -395,7 +388,7 @@ const CurriculumController = {
                     const archiveSql = `
                         INSERT INTO RG_SCHEDULE_CURRICULUM_HIS 
                         (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS)
-                        SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, SYSDATE, USER_INSERT, :1
+                        SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, (SYSDATE + 7/24), USER_INSERT, :1
                         FROM RG_SCHEDULE_CURRICULUM
                         WHERE TRIM(FACULTY_NO) = :2 
                           AND TRIM(GROUP_NO) = :3 

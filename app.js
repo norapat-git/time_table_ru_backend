@@ -6,7 +6,6 @@ const cors = require("cors");
 
 var app = express();
 const http = require('http');
-const https = require('https');
 const WebSocket = require('ws');
 
 require("dotenv").config();
@@ -19,42 +18,16 @@ app.use(bodyParser.urlencoded({ limit: "50mb", extended: true }));
 'use strict';
 Error.stackTraceLimit = 50;
 
-//enable cros
-var corsOptions = { origin: "*", credentials: true };
-app.use(cors(corsOptions));
-app.use(cors({ origin: ["http://localhost"], credentials: true }))
-app.use(cors({ origin: ["https://uat3.ru.ac.th"], credentials: true }))
+// CORS Configuration
 app.use(cors({
-  origin: "*", credentials: true,
+  origin: ['http://localhost', 'http://localhost:4200', 'https://uat3.ru.ac.th', '*'],
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-app.options('*', cors()); // ให้ OPTIONS ผ่าน
+app.options('*', cors()); // รองรับ preflight requests
 app.use(helmet());
-
-/* const allowedOrigins = [
-  'http://localhost:4200',
-  'https://uat3.ru.ac.th'
-];
-
-app.use(cors({
-  origin: function (origin, callback) {
-
-    // allow requests with no origin (mobile apps, postman, curl)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
-})); */
-
 
 
 const routeControll = require("./routers/routesControl");

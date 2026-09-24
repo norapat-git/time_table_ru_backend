@@ -3,12 +3,8 @@ var express = require('express');
 const router = express.Router()
 
 // Controllers
-const test = require('../controllers/test');
 const auth_sign = require('../controllers/auth/auth_sign');
 const auth_login = require('../controllers/auth/microsoft/login');
-const SelectDataController = require('../controllers/SelectModel');
-const InsertDataController = require('../controllers/InsertModel'); 
-const DeleteDataController = require('../controllers/DeleteModel');
 const AccountController = require('../controllers/timetableController/AccountController');
 const YearSemController = require('../controllers/timetableController/YearSemController');
 const CourseController = require('../controllers/timetableController/CourseController');
@@ -89,7 +85,10 @@ router.get('/timetable/rooms', TimetableController.getRoomOptions);
 router.get('/timetable/scheduled-rooms', TimetableController.getScheduledRooms);
 router.get('/timetable/check-instructor-conflicts', TimetableController.checkInstructorConflicts);
 router.get('/timetable/recommend-slots', TimetableController.recommendSlots);
+router.get('/timetable/reference-room-schedule', TimetableController.getReferenceRoomSchedule);
 router.post('/timetable/clone-semester', TimetableController.cloneSemester);
+router.post('/timetable/copy-classes', TimetableController.copySelectedClasses);
+router.post('/timetable/copy-single-class', TimetableController.copySingleClass);
 router.post('/timetable/auto-schedule/solve', TimetableController.autoScheduleSolve);
 router.post('/timetable/auto-schedule/apply', TimetableController.autoScheduleApply);
 router.post('/timetable/add', TimetableController.addScheduleClass);
@@ -101,13 +100,5 @@ router.post('/timetable/delete-bulk', TimetableController.deleteBulkScheduleClas
 // Reports (รายงาน)
 router.get('/report/mr30', ReportMr30Controller.getReportMr30);
 router.get('/report/mr30/faculties', ReportMr30Controller.getFaculties);
-
-// Test endpoints
-router.get('/select', test.TestGetSelectdb);
-router.get('/testinsert/:x', InsertDataController.testinsert);
-router.put('/send', test.TestrevData);
-router.post('/insertdb', InsertDataController.insertdb); 
-router.delete('/deletedb', DeleteDataController.deletedb);
-router.get('/testpool', SelectDataController.getSelectdb);
 
 module.exports = router;

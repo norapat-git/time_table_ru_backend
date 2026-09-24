@@ -51,13 +51,15 @@ const DataController = {
 
         try {
             const { email, password } = req.body;
-            //  console.log(req.body);
+            console.log(req.body);
 
             if (!email) {
                 return res.status(200).json({ "success": false, "message": 'Unauthorized Access' });
             }
 
-            let data = [email];
+            const cleanEmail = (email || '').toString().trim();
+
+            let data = [cleanEmail.toLowerCase()];
             let sql = `select USER_EMAIL,
                     USER_THAINAME,
                     USER_ENGNAME,
@@ -65,7 +67,7 @@ const DataController = {
                     USER_STATEOUT_TIME,
                     FLAG
  
-                    FROM RG_SCHEDULE_ACCOUNT WHERE USER_EMAIL=:1`;
+                    FROM RG_SCHEDULE_ACCOUNT WHERE LOWER(TRIM(USER_EMAIL))=:1`;
 
             const result_user = await SelectModel.findAll(res, sql, data);
             const results_user = result_user.rows ?? [];
@@ -79,7 +81,7 @@ const DataController = {
                 return res.status(200).json({ success: false, message: 'บัญชีผู้ใช้นี้ถูกปิดการใช้งาน กรุณาติดต่อผู้ดูแลระบบ' });
             }
 
-            const auth = await Authen.microsoftLogin(email, password, results_user);
+            const auth = await Authen.microsoftLogin(cleanEmail, password, results_user);
             if (!auth || (Array.isArray(auth) && auth.length === 0) || auth.success === false) {
                 return res.status(200).json({ success: false, message: auth?.message || 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
             }
@@ -98,8 +100,8 @@ const DataController = {
             delete safeAuthProfile.pwd;
             delete safeAuthProfile.secret;
 
-            data = [email];
-            sql = `update RG_SCHEDULE_ACCOUNT set USER_STATEIN_TIME=SYSDATE where USER_EMAIL=:1`;
+            data = [cleanEmail.toLowerCase()];
+            sql = `update RG_SCHEDULE_ACCOUNT set USER_STATEIN_TIME=SYSDATE where LOWER(TRIM(USER_EMAIL))=:1`;
             await UpdateModel.updatedb(res, sql, data);
 
             // merge data

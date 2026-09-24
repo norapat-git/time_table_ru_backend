@@ -56,9 +56,10 @@ const ReportMr30Controller = {
                     uc.COURSE_NAME_THAI AS COURSE_NAME_THAI,
                     uc.COURSE_NAME_ENG AS COURSE_NAME_ENG,
                     uc.CREDIT AS CREDIT,
-                    TRIM(rst.TIME_START) AS TIME_START,
-                    TRIM(rst.TIME_END) AS TIME_END
+                    TRIM(ts.TIME_START) AS TIME_START,
+                    TRIM(ts.TIME_END) AS TIME_END
                 FROM UGB_RU30 ru
+                LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
                 LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
                 LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
                 LEFT JOIN UGB_FACULTY uf ON TRIM(ui.FACULTY_NO) = TRIM(uf.FACULTY_NO)
@@ -71,7 +72,6 @@ const ReportMr30Controller = {
                     FROM UGB_COURSE
                     GROUP BY TRIM(COURSE_NO)
                 ) uc ON TRIM(ru.COURSE_NO) = uc.COURSE_NO
-                LEFT JOIN RG_SCHEDULE_TIME rst ON TRIM(ru.TIME_CODE) = TRIM(rst.TIME_CODE)
                 WHERE TRIM(ru.STUDY_YEAR) = :1 AND TRIM(ru.STUDY_SEMESTER) = :2
             `;
 
@@ -115,7 +115,7 @@ const ReportMr30Controller = {
 
             rows.forEach((r) => {
                 const key = `${r.COURSE_NO}_${r.SECTION_NO || '1'}_${r.DAY_CODE}_${r.TIME_CODE}_${r.ROOM_CODE || r.BUILDING_CODE || ''}`;
-                
+
                 if (r.COURSE_NO) distinctCourses.add(r.COURSE_NO);
                 if (r.INSTRUCTOR_CODE) distinctInstructors.add(r.INSTRUCTOR_CODE);
                 if (r.FACULTY_NO) distinctFaculties.add(r.FACULTY_NO);

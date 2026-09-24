@@ -3,14 +3,7 @@ const InsertModel = require('../../models/db/InsertModel');
 const UpdateModel = require('../../models/db/UpDateModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
-
-function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
-    if (!raw) return defaultVal;
-    const str = raw.toString().trim();
-    if (!str) return defaultVal;
-    const name = str.split('@')[0].trim();
-    return name || defaultVal;
-}
+const { sanitizeUsername } = require('../../utils/timetableUtils');
 
 const YearSemController = {
     async listYearSem(req, res) {
@@ -103,7 +96,7 @@ const YearSemController = {
 
                 const insertSql = `
                     INSERT INTO RG_SCHEDULE_YEARSEM (STUDY_YEAR, STUDY_SEMESTER, STUDY_ACTIVE, INSERT_DATE, USER_INSERT)
-                    VALUES (:1, :2, :3, SYSDATE, :4)
+                    VALUES (:1, :2, :3, (SYSDATE + 7/24), :4)
                 `;
                 await tx.executeOne(insertSql, [cleanYear, cleanSem, cleanActive, cleanUser]);
             });
@@ -172,7 +165,7 @@ const YearSemController = {
                     SET STUDY_YEAR = :1,
                         STUDY_SEMESTER = :2,
                         STUDY_ACTIVE = :3,
-                        INSERT_DATE = SYSDATE,
+                        INSERT_DATE = (SYSDATE + 7/24),
                         USER_INSERT = :4
                     WHERE TRIM(STUDY_YEAR) = :5 AND TRIM(STUDY_SEMESTER) = :6
                 `;
@@ -251,7 +244,7 @@ const YearSemController = {
                     )
                     SELECT 
                         STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, DAY_CODE, TIME_CODE, ROOM_CODE, INSTR_GROUP,
-                        INSERT_DATE, SYSDATE, USER_INSERT, :1
+                        INSERT_DATE, (SYSDATE + 7/24), USER_INSERT, :1
                     FROM RG_SCHEDULE_CLASS
                     WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3
                 `;
@@ -274,7 +267,7 @@ const YearSemController = {
                     )
                     SELECT 
                         STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_GROUP, INSTRUCTOR_CODE, INSTRUCTOR_ORD,
-                        INSERT_DATE, SYSDATE, USER_INSERT, :1
+                        INSERT_DATE, (SYSDATE + 7/24), USER_INSERT, :1
                     FROM RG_SCHEDULE_TEACH
                     WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3
                 `;
@@ -312,7 +305,7 @@ const YearSemController = {
                     SELECT 
                         STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
                         INSERT_DATE, USER_INSERT,
-                        SYSDATE, :1
+                        (SYSDATE + 7/24), :1
                     FROM RG_SCHEDULE_INSTRUCTOR
                     WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3
                 `;
@@ -337,7 +330,7 @@ const YearSemController = {
                     SELECT 
                         STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
                         INSERT_DATE, USER_INSERT,
-                        SYSDATE, :1
+                        (SYSDATE + 7/24), :1
                     FROM RG_SCHEDULE_COURSE
                     WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3
                 `;

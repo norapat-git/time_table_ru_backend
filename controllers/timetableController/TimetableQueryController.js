@@ -1,25 +1,5 @@
 const SelectModel = require('../../models/db/SelectModel');
-
-/**
- * ฟังก์ชันตรวจสอบช่วงเวลาคาบเกี่ยว/เหลื่อมล้ำกัน (Time Overlap)
- */
-function isTimeOverlapping(startA, endA, startB, endB) {
-    if (!startA || !endA || !startB || !endB) return false;
-    const sA = parseInt(startA.toString().replace(':', ''), 10);
-    const eA = parseInt(endA.toString().replace(':', ''), 10);
-    const sB = parseInt(startB.toString().replace(':', ''), 10);
-    const eB = parseInt(endB.toString().replace(':', ''), 10);
-    return sA < eB && eA > sB;
-}
-
-/**
- * ฟังก์ชันแปลงเวลา 4 หลัก (0800) ให้มีโคลอน (08:00)
- */
-function formatMilitaryTime(tm) {
-    if (!tm) return '';
-    const str = tm.toString().trim();
-    return str.length === 4 ? `${str.slice(0, 2)}:${str.slice(2)}` : str;
-}
+const { isTimeOverlapping, formatMilitaryTime } = require('../../utils/timetableUtils');
 
 /**
  * TimetableQueryController
@@ -48,6 +28,13 @@ const TimetableQueryController = {
                 if (activeRes.rows && activeRes.rows.length > 0) {
                     targetYear = activeRes.rows[0].STUDY_YEAR;
                     targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                } else {
+                    const latestSql = `SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER FROM RG_SCHEDULE_YEARSEM ORDER BY STUDY_YEAR DESC, STUDY_SEMESTER DESC`;
+                    const latestRes = await SelectModel.findAll(res, latestSql, []);
+                    if (latestRes.rows && latestRes.rows.length > 0) {
+                        targetYear = latestRes.rows[0].STUDY_YEAR;
+                        targetSem = latestRes.rows[0].STUDY_SEMESTER;
+                    }
                 }
             }
 
@@ -58,6 +45,7 @@ const TimetableQueryController = {
                     TRIM(ui.INSTRUCTOR_NAME_ENG) AS INSTRUCTOR_NAME_ENG,
                     TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
                     TRIM(ur.RANK_NAME_THAI_L) AS RANK_NAME_THAI_L,
+                    TRIM(ui.FACULTY_NO) AS FACULTY_NO,
                     TRIM(uf.FACULTY_NAME_SHORT) AS FACULTY_NAME_SHORT,
                     TRIM(uf.FACULTY_NAME_THAI) AS FACULTY_NAME_THAI
                 FROM RG_SCHEDULE_INSTRUCTOR ri
@@ -68,7 +56,8 @@ const TimetableQueryController = {
                 ORDER BY ui.FACULTY_NO ASC, ui.INSTRUCTOR_NAME_THAI ASC
             `;
             const result = await SelectModel.findAll(res, sql, [targetYear, targetSem]);
-            return res.status(200).json({ success: true, results: result.rows ?? [] });
+            let rows = result.rows ?? [];
+            return res.status(200).json({ success: true, results: rows });
         } catch (error) {
             console.error('[TimetableQueryController.getAllInstructors error]', error);
             if (!res.headersSent) {
@@ -91,6 +80,13 @@ const TimetableQueryController = {
                 if (activeRes.rows && activeRes.rows.length > 0) {
                     targetYear = activeRes.rows[0].STUDY_YEAR;
                     targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                } else {
+                    const latestSql = `SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER FROM RG_SCHEDULE_YEARSEM ORDER BY STUDY_YEAR DESC, STUDY_SEMESTER DESC`;
+                    const latestRes = await SelectModel.findAll(res, latestSql, []);
+                    if (latestRes.rows && latestRes.rows.length > 0) {
+                        targetYear = latestRes.rows[0].STUDY_YEAR;
+                        targetSem = latestRes.rows[0].STUDY_SEMESTER;
+                    }
                 }
             }
 
@@ -245,37 +241,8 @@ const TimetableQueryController = {
                       AND ru.DAY_CODE BETWEEN 1 AND 7
                 `;
                 const ru30Res = await SelectModel.findAll(res, ru30Sql, busyParams);
-                if (ru30Res && ru30Res.rows && ru30Res.rows.length > 0) {
+                if (ru30Res && ru30Res.rows) {
                     ru30Rows = ru30Res.rows;
-                } else {
-                    const fallbackInPlaceholders = uniqueCodes.map((_, i) => `:${i + 1}`).join(', ');
-                    const fallbackRu30Sql = `
-                        SELECT DISTINCT 
-                            TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
-                            TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
-                            TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
-                            ru.DAY_CODE AS DAY_CODE,
-                            ru.TIME_CODE AS RU30_TIME_CODE,
-                            TRIM(ts.TIME_START) AS RU30_START,
-                            TRIM(ts.TIME_END) AS RU30_END,
-                            TRIM(ru.COURSE_NO) AS RU30_COURSE_NO,
-                            TRIM(uc.COURSE_NAME_THAI) AS RU30_COURSE_NAME
-                        FROM UGB_RU30 ru
-                        LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
-                        LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
-                        LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
-                        LEFT JOIN (
-                            SELECT TRIM(COURSE_NO) AS COURSE_NO, MAX(TRIM(COURSE_NAME_THAI)) AS COURSE_NAME_THAI 
-                            FROM UGB_COURSE GROUP BY TRIM(COURSE_NO)
-                        ) uc ON TRIM(ru.COURSE_NO) = uc.COURSE_NO
-                        WHERE TRIM(ru.INSTRUCTOR_CODE) IN (${fallbackInPlaceholders})
-                          AND ru.DAY_CODE IS NOT NULL 
-                          AND ru.DAY_CODE BETWEEN 1 AND 7
-                    `;
-                    const fallbackRes = await SelectModel.findAll(res, fallbackRu30Sql, uniqueCodes);
-                    if (fallbackRes && fallbackRes.rows) {
-                        ru30Rows = fallbackRes.rows;
-                    }
                 }
             } catch (ru30Err) {
                 console.error('[getInstructorAvailability ru30Sql error]', ru30Err);
@@ -567,30 +534,8 @@ const TimetableQueryController = {
                       AND TRIM(ru.INSTRUCTOR_CODE) IN (${inInstP})
                 `;
                 const ru30Res = await SelectModel.findAll(res, ru30Sql, [targetYear, targetSem, targetDay, ...allCodes]);
-                if (ru30Res && ru30Res.rows && ru30Res.rows.length > 0) {
+                if (ru30Res && ru30Res.rows) {
                     ru30Rows = ru30Res.rows;
-                } else {
-                    const fbInInstP = allCodes.map((_, i) => `:${i + 2}`).join(', ');
-                    const fbSql = `
-                        SELECT DISTINCT 
-                            TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
-                            ru.DAY_CODE,
-                            ru.TIME_CODE AS RU30_TIME_CODE,
-                            TRIM(ts.TIME_START) AS RU30_START,
-                            TRIM(ts.TIME_END) AS RU30_END,
-                            TRIM(ru.COURSE_NO) AS RU30_COURSE_NO,
-                            TRIM(uc.COURSE_NAME_THAI) AS RU30_COURSE_NAME
-                        FROM UGB_RU30 ru
-                        LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
-                        LEFT JOIN (
-                            SELECT TRIM(COURSE_NO) AS COURSE_NO, MAX(TRIM(COURSE_NAME_THAI)) AS COURSE_NAME_THAI 
-                            FROM UGB_COURSE GROUP BY TRIM(COURSE_NO)
-                        ) uc ON TRIM(ru.COURSE_NO) = uc.COURSE_NO
-                        WHERE ru.DAY_CODE = :1
-                          AND TRIM(ru.INSTRUCTOR_CODE) IN (${fbInInstP})
-                    `;
-                    const fbRes = await SelectModel.findAll(res, fbSql, [targetDay, ...allCodes]);
-                    if (fbRes && fbRes.rows) ru30Rows = fbRes.rows;
                 }
             } catch (ru30Err) {
                 console.error('[getSlotAvailableInstructors ru30 error]', ru30Err);
@@ -1100,25 +1045,8 @@ const TimetableQueryController = {
                           AND ru.DAY_CODE BETWEEN 1 AND 7
                     `;
                     const ru30Res = await SelectModel.findAll(res, ru30Sql, [cleanYear, cleanSem, ...uniqueCodes]);
-                    if (ru30Res && ru30Res.rows && ru30Res.rows.length > 0) {
+                    if (ru30Res && ru30Res.rows) {
                         ru30Rows = ru30Res.rows;
-                    } else {
-                        const fallbackInP = uniqueCodes.map((_, i) => `:${i + 1}`).join(', ');
-                        const fbSql = `
-                            SELECT 
-                                TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
-                                ru.DAY_CODE AS DAY_CODE,
-                                ru.TIME_CODE AS RU30_TIME_CODE,
-                                TRIM(ts.TIME_START) AS RU30_START,
-                                TRIM(ts.TIME_END) AS RU30_END,
-                                TRIM(ru.COURSE_NO) AS RU30_COURSE_NO
-                            FROM UGB_RU30 ru
-                            LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
-                            WHERE TRIM(ru.INSTRUCTOR_CODE) IN (${fallbackInP})
-                              AND ru.DAY_CODE BETWEEN 1 AND 7
-                        `;
-                        const fbRes = await SelectModel.findAll(res, fbSql, uniqueCodes);
-                        if (fbRes && fbRes.rows) ru30Rows = fbRes.rows;
                     }
                 } catch (ru30Err) {
                     console.error('[recommendSlots ru30Sql error]', ru30Err);
@@ -1265,6 +1193,460 @@ const TimetableQueryController = {
             });
         } catch (error) {
             console.error('[TimetableQueryController.recommendSlots error]', error);
+            if (!res.headersSent) {
+                return res.status(500).json({ success: false, message: error.message });
+            }
+        }
+    },
+
+    async getReferenceRoomSchedule(req, res) {
+        try {
+            const {
+                sourceYear,
+                sourceSemester,
+                sourceRoom,
+                targetYear,
+                targetSemester,
+                targetRoom
+            } = req.query;
+
+            if (!sourceYear || !sourceSemester) {
+                return res.status(400).json({ success: false, message: 'กรุณาระบุปีและภาคการศึกษาต้นทาง (sourceYear, sourceSemester)' });
+            }
+
+            const sYear = sourceYear.toString().trim();
+            const sSem = sourceSemester.toString().trim();
+            const tYear = (targetYear || '').toString().trim();
+            const tSem = (targetSemester || '').toString().trim();
+            const tRoom = (targetRoom || sourceRoom || '').toString().trim().toUpperCase();
+            const sRoom = (sourceRoom || targetRoom || '').toString().trim().toUpperCase();
+
+            // 1. Fetch classes for sRoom in sYear/sSem
+            // Try RG_SCHEDULE_CLASS first
+            const srcClassesSql = `
+                SELECT 
+                    TRIM(rc.STUDY_YEAR) AS STUDY_YEAR,
+                    TRIM(rc.STUDY_SEMESTER) AS STUDY_SEMESTER,
+                    TRIM(rc.COURSE_NO) AS COURSE_NO,
+                    rc.DAY_CODE AS DAY_CODE,
+                    rc.TIME_CODE AS TIME_CODE,
+                    TRIM(rc.ROOM_CODE) AS ROOM_CODE,
+                    rc.INSTR_GROUP AS INSTR_GROUP,
+                    uc.COURSE_NAME_THAI AS COURSE_NAME_THAI,
+                    uc.COURSE_NAME_ENG AS COURSE_NAME_ENG,
+                    uc.CREDIT AS CREDIT
+                FROM RG_SCHEDULE_CLASS rc
+                LEFT JOIN (
+                    SELECT 
+                        TRIM(COURSE_NO) AS COURSE_NO,
+                        MAX(TRIM(COURSE_NAME_THAI)) AS COURSE_NAME_THAI,
+                        MAX(TRIM(COURSE_NAME_ENG_L)) AS COURSE_NAME_ENG,
+                        MAX(CREDIT) AS CREDIT
+                    FROM UGB_COURSE
+                    GROUP BY TRIM(COURSE_NO)
+                ) uc ON TRIM(rc.COURSE_NO) = uc.COURSE_NO
+                WHERE TRIM(rc.STUDY_YEAR) = :1 AND TRIM(rc.STUDY_SEMESTER) = :2
+                  AND UPPER(TRIM(rc.ROOM_CODE)) = :3
+                ORDER BY rc.DAY_CODE ASC, rc.TIME_CODE ASC, rc.COURSE_NO ASC
+            `;
+            const srcRes = await SelectModel.findAll(res, srcClassesSql, [sYear, sSem, sRoom]);
+            let srcList = srcRes?.rows || [];
+
+            // If no records in RG_SCHEDULE_CLASS, try UGB_RU30 for older years
+            let isFromRu30 = false;
+            if (srcList.length === 0) {
+                const ru30RoomSql = `
+                    SELECT 
+                        TRIM(ru.STUDY_YEAR) AS STUDY_YEAR,
+                        TRIM(ru.STUDY_SEMESTER) AS STUDY_SEMESTER,
+                        TRIM(ru.COURSE_NO) AS COURSE_NO,
+                        ru.DAY_CODE AS DAY_CODE,
+                        ru.TIME_CODE AS TIME_CODE,
+                        TRIM(ru.ROOM_CODE) AS ROOM_CODE,
+                        TRIM(ru.BUILDING_CODE) AS BUILDING_CODE,
+                        TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                        ru.SEQUENCE_INSTRUCTOR AS SEQUENCE_INSTRUCTOR,
+                        TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                        TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
+                        uc.COURSE_NAME_THAI AS COURSE_NAME_THAI,
+                        uc.COURSE_NAME_ENG AS COURSE_NAME_ENG,
+                        uc.CREDIT AS CREDIT
+                    FROM UGB_RU30 ru
+                    LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                    LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                    LEFT JOIN (
+                        SELECT 
+                            TRIM(COURSE_NO) AS COURSE_NO,
+                            MAX(TRIM(COURSE_NAME_THAI)) AS COURSE_NAME_THAI,
+                            MAX(TRIM(COURSE_NAME_ENG_L)) AS COURSE_NAME_ENG,
+                            MAX(CREDIT) AS CREDIT
+                        FROM UGB_COURSE
+                        GROUP BY TRIM(COURSE_NO)
+                    ) uc ON TRIM(ru.COURSE_NO) = uc.COURSE_NO
+                    WHERE TRIM(ru.STUDY_YEAR) = :1 AND TRIM(ru.STUDY_SEMESTER) = :2
+                      AND (UPPER(TRIM(ru.ROOM_CODE)) = :3 
+                           OR UPPER(TRIM(ru.BUILDING_CODE) || TRIM(ru.ROOM_CODE)) = :3)
+                      AND ru.DAY_CODE IS NOT NULL AND ru.TIME_CODE IS NOT NULL
+                    ORDER BY ru.DAY_CODE ASC, ru.TIME_CODE ASC, ru.COURSE_NO ASC
+                `;
+                const ru30RoomRes = await SelectModel.findAll(res, ru30RoomSql, [sYear, sSem, sRoom]);
+                const ru30Rows = ru30RoomRes?.rows || [];
+
+                if (ru30Rows.length > 0) {
+                    isFromRu30 = true;
+                    const groupedMap = new Map();
+                    for (const r of ru30Rows) {
+                        const key = `${r.COURSE_NO}_${r.DAY_CODE}_${r.TIME_CODE}`;
+                        if (!groupedMap.has(key)) {
+                            groupedMap.set(key, {
+                                STUDY_YEAR: r.STUDY_YEAR,
+                                STUDY_SEMESTER: r.STUDY_SEMESTER,
+                                COURSE_NO: r.COURSE_NO,
+                                DAY_CODE: Number(r.DAY_CODE),
+                                TIME_CODE: Number(r.TIME_CODE),
+                                ROOM_CODE: r.ROOM_CODE,
+                                COURSE_NAME_THAI: r.COURSE_NAME_THAI,
+                                COURSE_NAME_ENG: r.COURSE_NAME_ENG,
+                                CREDIT: r.CREDIT,
+                                INSTRUCTORS: []
+                            });
+                        }
+                        const item = groupedMap.get(key);
+                        if (r.INSTRUCTOR_CODE && !item.INSTRUCTORS.some(i => i.INSTRUCTOR_CODE === r.INSTRUCTOR_CODE)) {
+                            item.INSTRUCTORS.push({
+                                INSTRUCTOR_CODE: r.INSTRUCTOR_CODE,
+                                INSTRUCTOR_NAME_THAI: r.INSTRUCTOR_NAME_THAI,
+                                RANK_NAME_THAI_S: r.RANK_NAME_THAI_S,
+                                INSTRUCTOR_ORD: r.SEQUENCE_INSTRUCTOR || (item.INSTRUCTORS.length + 1)
+                            });
+                        }
+                    }
+                    srcList = Array.from(groupedMap.values());
+                }
+            }
+
+            // If from RG_SCHEDULE_CLASS, fetch instructors from RG_SCHEDULE_TEACH
+            if (!isFromRu30 && srcList.length > 0) {
+                const teachSql = `
+                    SELECT 
+                        rt.INSTRUCTOR_GROUP,
+                        TRIM(rt.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                        rt.INSTRUCTOR_ORD,
+                        TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                        TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S
+                    FROM RG_SCHEDULE_TEACH rt
+                    LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(rt.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                    LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                    WHERE TRIM(rt.STUDY_YEAR) = :1 AND TRIM(rt.STUDY_SEMESTER) = :2
+                    ORDER BY rt.INSTRUCTOR_GROUP ASC, TO_NUMBER(rt.INSTRUCTOR_ORD) ASC
+                `;
+                const teachRes = await SelectModel.findAll(res, teachSql, [sYear, sSem]);
+                const teachRows = teachRes?.rows || [];
+                const teachMap = {};
+                teachRows.forEach(t => {
+                    const grp = t.INSTRUCTOR_GROUP ? t.INSTRUCTOR_GROUP.toString().trim() : '';
+                    if (!teachMap[grp]) teachMap[grp] = [];
+                    if (!teachMap[grp].some(i => i.INSTRUCTOR_CODE === t.INSTRUCTOR_CODE)) {
+                        teachMap[grp].push({
+                            INSTRUCTOR_CODE: t.INSTRUCTOR_CODE,
+                            INSTRUCTOR_NAME_THAI: t.INSTRUCTOR_NAME_THAI,
+                            RANK_NAME_THAI_S: t.RANK_NAME_THAI_S,
+                            INSTRUCTOR_ORD: t.INSTRUCTOR_ORD
+                        });
+                    }
+                });
+
+                srcList = srcList.map(item => ({
+                    ...item,
+                    DAY_CODE: Number(item.DAY_CODE),
+                    TIME_CODE: Number(item.TIME_CODE),
+                    INSTRUCTORS: teachMap[item.INSTR_GROUP ? item.INSTR_GROUP.toString().trim() : ''] || []
+                }));
+            }
+
+            if (srcList.length === 0) {
+                return res.status(200).json({
+                    success: true,
+                    sourceYear: sYear,
+                    sourceSemester: sSem,
+                    sourceRoom: sRoom,
+                    results: []
+                });
+            }
+
+            // 2. Fetch Time Slots for period label and overlap calculation
+            const isSummer = tSem === '3' || tSem.toUpperCase() === 'S';
+            const timeFlag = isSummer ? '2' : '1';
+            const timesSql = `
+                SELECT TRIM(TIME_CODE) AS TIME_CODE, TRIM(TIME_START) AS TIME_START, TRIM(TIME_END) AS TIME_END
+                FROM RG_SCHEDULE_TIME
+                WHERE TRIM(TIME_FLAG) = :1
+            `;
+            const timeRes = await SelectModel.findAll(res, timesSql, [timeFlag]);
+            const timeMap = {};
+            (timeRes?.rows || []).forEach(tm => {
+                timeMap[Number(tm.TIME_CODE)] = {
+                    start: tm.TIME_START,
+                    end: tm.TIME_END,
+                    period: `${formatMilitaryTime(tm.TIME_START)} - ${formatMilitaryTime(tm.TIME_END)}`
+                };
+            });
+
+            // 2.1 Fetch Paired Courses (RG_SCHEDULE_PAIR_COURSE)
+            let pairRows = [];
+            try {
+                const pairSql = `
+                    SELECT 
+                        p.PAIR_COURSE_GROUP_ID,
+                        TRIM(p.COURSE_NO) AS COURSE_NO,
+                        TRIM(p.START_YEAR) AS START_YEAR,
+                        TRIM(p.STOP_YEAR) AS STOP_YEAR,
+                        TRIM(p.YEAR_LEVEL) AS YEAR_LEVEL,
+                        TRIM(p.SEMESTER) AS SEMESTER,
+                        uc.COURSE_NAME_THAI,
+                        uc.COURSE_NAME_ENG,
+                        uc.CREDIT
+                    FROM RG_SCHEDULE_PAIR_COURSE p
+                    LEFT JOIN (
+                        SELECT 
+                            TRIM(COURSE_NO) AS COURSE_NO,
+                            MAX(TRIM(COURSE_NAME_THAI)) AS COURSE_NAME_THAI,
+                            MAX(TRIM(COURSE_NAME_ENG_L)) AS COURSE_NAME_ENG,
+                            MAX(CREDIT) AS CREDIT
+                        FROM UGB_COURSE
+                        GROUP BY TRIM(COURSE_NO)
+                    ) uc ON TRIM(p.COURSE_NO) = uc.COURSE_NO
+                    ORDER BY p.PAIR_COURSE_GROUP_ID ASC, TRIM(p.COURSE_NO) ASC
+                `;
+                const pairRes = await SelectModel.findAll(res, pairSql, []);
+                pairRows = pairRes?.rows || [];
+            } catch (pErr) {
+                console.error('[getReferenceRoomSchedule pairSql error]', pErr);
+            }
+
+            const pairGroupByGroupId = {};
+            pairRows.forEach((pr) => {
+                const gId = pr.PAIR_COURSE_GROUP_ID;
+                if (!pairGroupByGroupId[gId]) pairGroupByGroupId[gId] = [];
+                pairGroupByGroupId[gId].push(pr);
+            });
+
+            const pairedCoursesByCourseNo = {};
+            Object.keys(pairGroupByGroupId).forEach((gId) => {
+                const groupCourses = pairGroupByGroupId[gId];
+                groupCourses.forEach((c) => {
+                    const cNo = (c.COURSE_NO || '').trim().toUpperCase();
+                    const otherCourses = groupCourses
+                        .filter((oc) => (oc.COURSE_NO || '').trim().toUpperCase() !== cNo)
+                        .map((oc) => ({
+                            groupId: oc.PAIR_COURSE_GROUP_ID,
+                            courseNo: oc.COURSE_NO,
+                            courseNameThai: oc.COURSE_NAME_THAI || '',
+                            courseNameEng: oc.COURSE_NAME_ENG || '',
+                            credit: oc.CREDIT,
+                            startYear: oc.START_YEAR,
+                            stopYear: oc.STOP_YEAR,
+                            yearLevel: oc.YEAR_LEVEL,
+                            semester: oc.SEMESTER
+                        }));
+                    if (!pairedCoursesByCourseNo[cNo]) {
+                        pairedCoursesByCourseNo[cNo] = [];
+                    }
+                    otherCourses.forEach(oc => {
+                        if (!pairedCoursesByCourseNo[cNo].some(x => x.courseNo === oc.courseNo)) {
+                            pairedCoursesByCourseNo[cNo].push(oc);
+                        }
+                    });
+                });
+            });
+
+            // 3. Fetch Target Data for Conflict Checking (if targetYear and targetSemester provided)
+            const targetOccupiedRoomMap = {};
+            let targetRu30Rows = [];
+            const targetScheduleBusyMap = {};
+
+            const allInstrCodes = new Set();
+            srcList.forEach(cls => {
+                (cls.INSTRUCTORS || []).forEach(inst => {
+                    if (inst.INSTRUCTOR_CODE) allInstrCodes.add(inst.INSTRUCTOR_CODE);
+                });
+            });
+            const uniqueInstrList = Array.from(allInstrCodes);
+
+            if (tYear && tSem) {
+                // A. Target Room Occupancy
+                const targetRoomSql = `
+                    SELECT 
+                        rc.DAY_CODE,
+                        rc.TIME_CODE,
+                        TRIM(rc.COURSE_NO) AS COURSE_NO,
+                        uc.COURSE_NAME_THAI
+                    FROM RG_SCHEDULE_CLASS rc
+                    LEFT JOIN (
+                        SELECT TRIM(COURSE_NO) AS COURSE_NO, MAX(TRIM(COURSE_NAME_THAI)) AS COURSE_NAME_THAI FROM UGB_COURSE GROUP BY TRIM(COURSE_NO)
+                    ) uc ON TRIM(rc.COURSE_NO) = uc.COURSE_NO
+                    WHERE TRIM(rc.STUDY_YEAR) = :1 AND TRIM(rc.STUDY_SEMESTER) = :2
+                      AND UPPER(TRIM(rc.ROOM_CODE)) = :3
+                `;
+                const targetRoomRes = await SelectModel.findAll(res, targetRoomSql, [tYear, tSem, tRoom]);
+                (targetRoomRes?.rows || []).forEach(r => {
+                    const key = `${r.DAY_CODE}_${r.TIME_CODE}`;
+                    targetOccupiedRoomMap[key] = {
+                        courseNo: r.COURSE_NO,
+                        courseName: r.COURSE_NAME_THAI || ''
+                    };
+                });
+
+                // B. Target MR.30 for these instructors
+                if (uniqueInstrList.length > 0) {
+                    const inPl = uniqueInstrList.map((_, i) => `:${i + 3}`).join(', ');
+                    const targetRu30Sql = `
+                        SELECT 
+                            TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                            TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                            TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S,
+                            ru.DAY_CODE,
+                            ru.TIME_CODE,
+                            TRIM(ts.TIME_START) AS RU30_START,
+                            TRIM(ts.TIME_END) AS RU30_END,
+                            TRIM(ru.COURSE_NO) AS RU30_COURSE_NO,
+                            TRIM(uc.COURSE_NAME_THAI) AS RU30_COURSE_NAME
+                        FROM UGB_RU30 ru
+                        LEFT JOIN UGB_TIME_SCHEDULE ts ON ru.TIME_CODE = ts.TIME_CODE
+                        LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                        LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                        LEFT JOIN (
+                            SELECT TRIM(COURSE_NO) AS COURSE_NO, MAX(TRIM(COURSE_NAME_THAI)) AS COURSE_NAME_THAI FROM UGB_COURSE GROUP BY TRIM(COURSE_NO)
+                        ) uc ON TRIM(ru.COURSE_NO) = uc.COURSE_NO
+                        WHERE TRIM(ru.STUDY_YEAR) = :1 
+                          AND TRIM(ru.STUDY_SEMESTER) = :2
+                          AND TRIM(ru.INSTRUCTOR_CODE) IN (${inPl})
+                          AND ru.DAY_CODE IS NOT NULL
+                    `;
+                    const tRu30Res = await SelectModel.findAll(res, targetRu30Sql, [tYear, tSem, ...uniqueInstrList]);
+                    targetRu30Rows = tRu30Res?.rows || [];
+
+                    // C. Target Timetable Schedule Busy for these instructors
+                    const targetBusySql = `
+                        SELECT 
+                            rc.DAY_CODE,
+                            rc.TIME_CODE,
+                            TRIM(rc.COURSE_NO) AS COURSE_NO,
+                            TRIM(rc.ROOM_CODE) AS ROOM_CODE,
+                            TRIM(rt.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
+                            TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
+                            TRIM(ur.RANK_NAME_THAI_S) AS RANK_NAME_THAI_S
+                        FROM RG_SCHEDULE_CLASS rc
+                        JOIN RG_SCHEDULE_TEACH rt 
+                            ON TRIM(rc.STUDY_YEAR) = TRIM(rt.STUDY_YEAR) 
+                           AND TRIM(rc.STUDY_SEMESTER) = TRIM(rt.STUDY_SEMESTER) 
+                           AND TRIM(TO_CHAR(rc.INSTR_GROUP)) = TRIM(rt.INSTRUCTOR_GROUP)
+                        LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(rt.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
+                        LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
+                        WHERE TRIM(rc.STUDY_YEAR) = :1 
+                          AND TRIM(rc.STUDY_SEMESTER) = :2
+                          AND TRIM(rt.INSTRUCTOR_CODE) IN (${inPl})
+                    `;
+                    const tBusyRes = await SelectModel.findAll(res, targetBusySql, [tYear, tSem, ...uniqueInstrList]);
+                    (tBusyRes?.rows || []).forEach(b => {
+                        const key = `${b.INSTRUCTOR_CODE}_${b.DAY_CODE}_${b.TIME_CODE}`;
+                        targetScheduleBusyMap[key] = {
+                            courseNo: b.COURSE_NO,
+                            roomCode: b.ROOM_CODE,
+                            instructorName: `${b.RANK_NAME_THAI_S || ''} ${b.INSTRUCTOR_NAME_THAI || b.INSTRUCTOR_CODE}`.trim()
+                        };
+                    });
+                }
+            }
+
+            // 4. Check conflicts for each source class
+            const processedResults = srcList.map(cls => {
+                const slotKey = `${cls.DAY_CODE}_${cls.TIME_CODE}`;
+                const slotInfo = timeMap[cls.TIME_CODE] || { start: '', end: '', period: `คาบที่ ${cls.TIME_CODE}` };
+                const conflicts = [];
+                let isAlreadyCopied = false;
+
+                // A. Check target room occupancy
+                const roomOccupant = targetOccupiedRoomMap[slotKey];
+                if (roomOccupant) {
+                    if (roomOccupant.courseNo === cls.COURSE_NO) {
+                        isAlreadyCopied = true;
+                    } else {
+                        conflicts.push(`ห้อง ${tRoom} มีการจัดสอนวิชา ${roomOccupant.courseNo} ${roomOccupant.courseName ? '(' + roomOccupant.courseName + ')' : ''} อยู่แล้วในคาบนี้`);
+                    }
+                }
+
+                // B. Check Target MR.30
+                (cls.INSTRUCTORS || []).forEach(inst => {
+                    const iCode = inst.INSTRUCTOR_CODE;
+                    const iName = `${inst.RANK_NAME_THAI_S || ''} ${inst.INSTRUCTOR_NAME_THAI || iCode}`.trim();
+
+                    for (const ru of targetRu30Rows) {
+                        if (ru.INSTRUCTOR_CODE === iCode && Number(ru.DAY_CODE) === cls.DAY_CODE) {
+                            const overlaps = isTimeOverlapping(slotInfo.start, slotInfo.end, ru.RU30_START, ru.RU30_END) || Number(ru.TIME_CODE) === cls.TIME_CODE;
+                            if (overlaps) {
+                                const timeStr = ru.RU30_START && ru.RU30_END 
+                                    ? `${formatMilitaryTime(ru.RU30_START)}-${formatMilitaryTime(ru.RU30_END)}` 
+                                    : `คาบ ${ru.TIME_CODE}`;
+                                conflicts.push(`ติดสอน มร.30 ปี ${tYear}/${tSem}: ${iName} (วิชา ${ru.RU30_COURSE_NO} เวลา ${timeStr})`);
+                            }
+                        }
+                    }
+
+                    // C. Check Target Schedule Teaching
+                    const busyKey = `${iCode}_${cls.DAY_CODE}_${cls.TIME_CODE}`;
+                    const busyInfo = targetScheduleBusyMap[busyKey];
+                    if (busyInfo && (!isAlreadyCopied || busyInfo.courseNo !== cls.COURSE_NO)) {
+                        conflicts.push(`ตารางสอนชนกัน: ${iName} มีสอนวิชา ${busyInfo.courseNo} (ห้อง ${busyInfo.roomCode || '-'}) ในคาบนี้แล้ว`);
+                    }
+                });
+
+                const uniqueConflicts = Array.from(new Set(conflicts));
+
+                let statusColor = 'green';
+                let statusText = 'พร้อมคัดลอก (ไม่มีคาบชน)';
+                let canCopy = true;
+
+                if (isAlreadyCopied) {
+                    statusColor = 'blue';
+                    statusText = 'อยู่ในตารางปัจจุบันแล้ว';
+                    canCopy = false;
+                } else if (uniqueConflicts.length > 0) {
+                    statusColor = 'red';
+                    statusText = `ไม่สามารถคัดลอกได้ (${uniqueConflicts.length} ข้อขัดแย้ง)`;
+                    canCopy = false;
+                }
+
+                const cNo = (cls.COURSE_NO || '').trim().toUpperCase();
+                const pairedList = pairedCoursesByCourseNo[cNo] || [];
+
+                return {
+                    ...cls,
+                    PAIRED_COURSES: pairedList,
+                    HAS_PAIRED_COURSES: pairedList.length > 0,
+                    periodText: slotInfo.period,
+                    timeStart: slotInfo.start,
+                    timeEnd: slotInfo.end,
+                    isAlreadyCopied,
+                    canCopy,
+                    statusColor,
+                    statusText,
+                    conflicts: uniqueConflicts
+                };
+            });
+
+            return res.status(200).json({
+                success: true,
+                sourceYear: sYear,
+                sourceSemester: sSem,
+                sourceRoom: sRoom,
+                targetYear: tYear,
+                targetSemester: tSem,
+                targetRoom: tRoom,
+                results: processedResults
+            });
+        } catch (error) {
+            console.error('[TimetableQueryController.getReferenceRoomSchedule error]', error);
             if (!res.headersSent) {
                 return res.status(500).json({ success: false, message: error.message });
             }

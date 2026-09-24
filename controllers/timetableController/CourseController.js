@@ -3,14 +3,7 @@ const InsertModel = require('../../models/db/InsertModel');
 const UpdateModel = require('../../models/db/UpDateModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
-
-function sanitizeUsername(raw, defaultVal = 'SYSTEM') {
-    if (!raw) return defaultVal;
-    const str = raw.toString().trim();
-    if (!str) return defaultVal;
-    const name = str.split('@')[0].trim();
-    return name || defaultVal;
-}
+const { sanitizeUsername } = require('../../utils/timetableUtils');
 
 const CourseController = {
     async listCourses(req, res) {
@@ -24,8 +17,15 @@ const CourseController = {
                     year = activeRes.rows[0].STUDY_YEAR;
                     semester = activeRes.rows[0].STUDY_SEMESTER;
                 } else {
-                    year = '2569';
-                    semester = '1';
+                    const latestSql = `SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER FROM RG_SCHEDULE_YEARSEM ORDER BY STUDY_YEAR DESC, STUDY_SEMESTER DESC`;
+                    const latestRes = await SelectModel.findAll(res, latestSql, []);
+                    if (latestRes.rows && latestRes.rows.length > 0) {
+                        year = latestRes.rows[0].STUDY_YEAR;
+                        semester = latestRes.rows[0].STUDY_SEMESTER;
+                    } else {
+                        year = '';
+                        semester = '';
+                    }
                 }
             }
 
@@ -251,7 +251,7 @@ const CourseController = {
                         INSERT INTO RG_SCHEDULE_COURSE (
                             STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
                             INSERT_DATE, USER_INSERT
-                        ) VALUES (:1, :2, :3, :4, SYSDATE, :5)
+                        ) VALUES (:1, :2, :3, :4, (SYSDATE + 7/24), :5)
                     `;
                     await tx.executeOne(insertSql, [cleanYear, cleanSem, cNo, cleanRemark, cleanUser]);
                     added.push(cNo);
@@ -315,7 +315,7 @@ const CourseController = {
                     UPDATE RG_SCHEDULE_COURSE 
                     SET COURSE_NO = :1,
                         COURSE_REMARK = :2,
-                        INSERT_DATE = SYSDATE,
+                        INSERT_DATE = (SYSDATE + 7/24),
                         USER_INSERT = :3
                     WHERE TRIM(STUDY_YEAR) = :4 AND TRIM(STUDY_SEMESTER) = :5 AND TRIM(COURSE_NO) = :6
                 `;
@@ -376,7 +376,7 @@ const CourseController = {
                     SELECT 
                         STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
                         INSERT_DATE, USER_INSERT,
-                        SYSDATE, :1
+                        (SYSDATE + 7/24), :1
                     FROM RG_SCHEDULE_COURSE 
                     WHERE TRIM(STUDY_YEAR) = :2 AND TRIM(STUDY_SEMESTER) = :3 AND UPPER(TRIM(COURSE_NO)) = :4
                 `;
@@ -465,7 +465,7 @@ const CourseController = {
                     SELECT 
                         STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
                         INSERT_DATE, USER_INSERT,
-                        SYSDATE, :1
+                        (SYSDATE + 7/24), :1
                     FROM RG_SCHEDULE_COURSE 
                     WHERE TRIM(STUDY_YEAR) = :2 
                       AND TRIM(STUDY_SEMESTER) = :3 

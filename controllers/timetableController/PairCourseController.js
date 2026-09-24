@@ -114,7 +114,7 @@ const PairCourseController = {
                 const archiveSql = `
                     INSERT INTO RG_SCHEDULE_PAIR_COURSE_HIS 
                     (PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, INSERT_DATE)
-                    SELECT PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, SYSDATE
+                    SELECT PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, (SYSDATE + 7/24)
                     FROM RG_SCHEDULE_PAIR_COURSE
                     WHERE PAIR_COURSE_GROUP_ID = :1
                 `;
@@ -154,7 +154,7 @@ const PairCourseController = {
                     const archiveSql = `
                         INSERT INTO RG_SCHEDULE_PAIR_COURSE_HIS 
                         (PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, INSERT_DATE)
-                        SELECT PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, SYSDATE
+                        SELECT PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, (SYSDATE + 7/24)
                         FROM RG_SCHEDULE_PAIR_COURSE
                         WHERE PAIR_COURSE_GROUP_ID = :1
                     `;
@@ -210,7 +210,7 @@ const PairCourseController = {
                 const archiveSql = `
                     INSERT INTO RG_SCHEDULE_PAIR_COURSE_HIS 
                     (PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, INSERT_DATE)
-                    SELECT PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, SYSDATE
+                    SELECT PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, (SYSDATE + 7/24)
                     FROM RG_SCHEDULE_PAIR_COURSE
                     WHERE PAIR_COURSE_GROUP_ID = :1
                 `;

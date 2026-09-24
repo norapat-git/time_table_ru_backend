@@ -252,8 +252,23 @@ const TimetableListController = {
                 if (activeRes.rows && activeRes.rows.length > 0) {
                     targetYear = activeRes.rows[0].STUDY_YEAR;
                     targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                } else {
+                    const latestSql = `
+                        SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER 
+                        FROM RG_SCHEDULE_YEARSEM 
+                        ORDER BY STUDY_YEAR DESC, STUDY_SEMESTER DESC
+                    `;
+                    const latestRes = await SelectModel.findAll(res, latestSql, []);
+                    if (latestRes.rows && latestRes.rows.length > 0) {
+                        targetYear = latestRes.rows[0].STUDY_YEAR;
+                        targetSem = latestRes.rows[0].STUDY_SEMESTER;
+                    }
                 }
             }
+
+            const cleanYear = (targetYear || '').toString().trim();
+            const cleanSem = (targetSem || '').toString().trim();
+            const cleanCourse = courseNo.toString().trim().toUpperCase();
 
             const sql = `
                 SELECT 
@@ -274,10 +289,11 @@ const TimetableListController = {
                 LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(ru.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
                 LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
                 WHERE REPLACE(UPPER(TRIM(ru.COURSE_NO)), ' ', '') = REPLACE(UPPER(TRIM(:1)), ' ', '')
+                  AND TRIM(ru.STUDY_YEAR) = :2
+                  AND TRIM(ru.STUDY_SEMESTER) = :3
                 ORDER BY ru.DAY_CODE ASC, ru.TIME_CODE ASC, ru.SEQUENCE_INSTRUCTOR ASC
             `;
-            const cleanCourse = courseNo.toString().trim().toUpperCase();
-            const result = await SelectModel.findAll(res, sql, [cleanCourse]);
+            const result = await SelectModel.findAll(res, sql, [cleanCourse, cleanYear, cleanSem]);
             const rows = result.rows ?? [];
 
             const slotMap = new Map();
@@ -341,8 +357,8 @@ const TimetableListController = {
                   AND REGEXP_LIKE(SUBSTR(TRIM(rc.COURSE_NO), 1, 1), '^[A-Za-z]')
                 ORDER BY LETTER ASC
             `;
-            const result = await SelectModel.findAll(res, sql, [targetYear, targetSem]);
-            const letters = (result.rows ?? []).map(r => r.LETTER).filter(Boolean);
+            let result = await SelectModel.findAll(res, sql, [targetYear, targetSem]);
+            let letters = (result.rows ?? []).map(r => r.LETTER).filter(Boolean);
             return res.status(200).json({ success: true, results: letters });
         } catch (error) {
             console.error('[TimetableListController.getFirstLetters error]', error);
@@ -382,8 +398,9 @@ const TimetableListController = {
                 GROUP BY UPPER(REGEXP_SUBSTR(TRIM(rc.COURSE_NO), '^[A-Za-z]+'))
                 ORDER BY PREFIX_NAME ASC
             `;
-            const result = await SelectModel.findAll(res, sql, [targetYear, targetSem, letter]);
-            return res.status(200).json({ success: true, letter, results: result.rows ?? [] });
+            let result = await SelectModel.findAll(res, sql, [targetYear, targetSem, letter]);
+            let rows = result.rows ?? [];
+            return res.status(200).json({ success: true, letter, results: rows });
         } catch (error) {
             console.error('[TimetableListController.getPrefixGroups error]', error);
             if (!res.headersSent) {
@@ -441,8 +458,9 @@ const TimetableListController = {
                 ORDER BY TRIM(rc.COURSE_NO) ASC
             `;
 
-            const result = await SelectModel.findAll(res, sql, params);
-            return res.status(200).json({ success: true, results: result?.rows ?? [] });
+            let result = await SelectModel.findAll(res, sql, params);
+            let rows = result?.rows ?? [];
+            return res.status(200).json({ success: true, results: rows });
         } catch (error) {
             console.error('[TimetableListController.getCoursesByPrefix error]', error);
             if (!res.headersSent) {
