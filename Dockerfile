@@ -12,10 +12,11 @@ RUN npm install --production --silent \
 
 # ===== install dependency oracle & download Instant Client =====
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libaio1 \
+    ca-certificates \
     tzdata \
     wget \
     unzip \
+    && (apt-get install -y --no-install-recommends libaio1 || apt-get install -y --no-install-recommends libaio1t64 || true) \
     && mkdir -p /usr/lib/instantclient \
     && wget -q https://download.oracle.com/otn_software/linux/instantclient/1923000/instantclient-basiclite-linux.x64-19.23.0.0.0dbru.zip -O /tmp/instantclient.zip \
     && unzip -q /tmp/instantclient.zip -d /tmp/ic/ \
