@@ -27,6 +27,8 @@ router.post("/yearsem/add", YearSemController.addYearSem);
 router.put("/yearsem/update", YearSemController.updateYearSem);
 router.put("/yearsem/set-active", YearSemController.setActiveYearSem);
 router.delete("/yearsem/delete/:year/:semester", YearSemController.deleteYearSem);
+router.post("/yearsem/reset-all", YearSemController.resetAllData);
+
 
 // Course (จัดการวิชาที่เปิดสอน)
 router.get("/course/list", CourseController.listCourses);

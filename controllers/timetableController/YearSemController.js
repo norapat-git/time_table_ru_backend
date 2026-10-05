@@ -3,7 +3,7 @@ const InsertModel = require('../../models/db/InsertModel');
 const UpdateModel = require('../../models/db/UpDateModel');
 const DeleteModel = require('../../models/db/DeleteModel');
 const DbTxModel = require('../../models/db/DbTxModel');
-const { sanitizeUsername } = require('../../utils/timetableUtils');
+const { sanitizeUsername, getActiveYearSemHelper } = require('../../utils/timetableUtils');
 
 const YearSemController = {
     async listYearSem(req, res) {
@@ -29,20 +29,7 @@ const YearSemController = {
 
     async getActiveYearSem(req, res) {
         try {
-            const sql = `
-                SELECT 
-                    TRIM(STUDY_YEAR) AS STUDY_YEAR,
-                    TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER,
-                    TRIM(STUDY_ACTIVE) AS STUDY_ACTIVE,
-                    TO_CHAR(INSERT_DATE, 'YYYY-MM-DD HH24:MI:SS') AS INSERT_DATE,
-                    TRIM(USER_INSERT) AS USER_INSERT
-                FROM RG_SCHEDULE_YEARSEM
-                WHERE TRIM(STUDY_ACTIVE) = '1'
-                AND ROWNUM = 1
-            `;
-            const result = await SelectModel.findAll(res, sql, []);
-            const rows = result.rows ?? [];
-            const active = rows.length > 0 ? rows[0] : null;
+            const active = await getActiveYearSemHelper(res);
             return res.status(200).json({ success: true, message: '', results: active });
         } catch (error) {
             console.error('[YearSemController.getActiveYearSem error]', error);
@@ -361,7 +348,166 @@ const YearSemController = {
             console.error('[YearSemController.deleteYearSem error]', error);
             return res.status(400).json({ success: false, message: error.message });
         }
+    },
+
+    async resetAllData(req, res) {
+        try {
+            const { confirmText, userInsert } = req.body;
+            if (confirmText !== 'ยอมรับรีเซ็ทข้อมูล') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'ข้อความยืนยันไม่ถูกต้อง กรุณาพิมพ์ "ยอมรับรีเซ็ทข้อมูล"'
+                });
+            }
+
+            const cleanUser = sanitizeUsername(userInsert || req.headers['x-user-name'] || 'SYSTEM');
+
+            await DbTxModel.withTransaction(async (conn, tx) => {
+                // 1. Archive RG_SCHEDULE_CLASS -> RG_SCHEDULE_CLASS_HIS
+                const archiveClassSql = `
+                    INSERT INTO RG_SCHEDULE_CLASS_HIS (
+                        STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, DAY_CODE, TIME_CODE, ROOM_CODE, INSTR_GROUP,
+                        INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS
+                    )
+                    SELECT 
+                        STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, DAY_CODE, TIME_CODE, ROOM_CODE, INSTR_GROUP,
+                        INSERT_DATE, (SYSDATE + 7/24), USER_INSERT, :1
+                    FROM RG_SCHEDULE_CLASS
+                `;
+                try {
+                    await tx.executeOne(archiveClassSql, [cleanUser]);
+                } catch (e) {
+                    console.warn('[resetAllData archiveClass warning]', e?.message);
+                }
+
+                // Delete RG_SCHEDULE_CLASS
+                await tx.executeOne(`DELETE FROM RG_SCHEDULE_CLASS`, []);
+
+                // 2. Archive RG_SCHEDULE_TEACH -> RG_SCHEDULE_TEACH_HIS
+                const archiveTeachSql = `
+                    INSERT INTO RG_SCHEDULE_TEACH_HIS (
+                        STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_GROUP, INSTRUCTOR_CODE, INSTRUCTOR_ORD,
+                        INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS
+                    )
+                    SELECT 
+                        STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_GROUP, INSTRUCTOR_CODE, INSTRUCTOR_ORD,
+                        INSERT_DATE, (SYSDATE + 7/24), USER_INSERT, :1
+                    FROM RG_SCHEDULE_TEACH
+                `;
+                try {
+                    await tx.executeOne(archiveTeachSql, [cleanUser]);
+                } catch (e) {
+                    console.warn('[resetAllData archiveTeach warning]', e?.message);
+                }
+
+                // Delete RG_SCHEDULE_TEACH
+                await tx.executeOne(`DELETE FROM RG_SCHEDULE_TEACH`, []);
+
+                // 3. Delete RG_SCHEDULE_INSTRUCTOR_GROUP
+                try {
+                    await tx.executeOne(`DELETE FROM RG_SCHEDULE_INSTRUCTOR_GROUP`, []);
+                } catch (e) {
+                    console.warn('[resetAllData delete RG_SCHEDULE_INSTRUCTOR_GROUP warning]', e?.message);
+                }
+
+                // 4. Archive RG_SCHEDULE_INSTRUCTOR -> RG_SCHEDULE_INSTRUCTOR_HIS
+                const archiveInstrSql = `
+                    INSERT INTO RG_SCHEDULE_INSTRUCTOR_HIS (
+                        STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
+                        INSERT_DATE, USER_INSERT,
+                        INSERT_HIS_DATE, USER_INSERT_HIS
+                    )
+                    SELECT 
+                        STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_CODE,
+                        INSERT_DATE, USER_INSERT,
+                        (SYSDATE + 7/24), :1
+                    FROM RG_SCHEDULE_INSTRUCTOR
+                `;
+                try {
+                    await tx.executeOne(archiveInstrSql, [cleanUser]);
+                } catch (e) {
+                    console.warn('[resetAllData archiveInstr warning]', e?.message);
+                }
+
+                // Delete RG_SCHEDULE_INSTRUCTOR
+                await tx.executeOne(`DELETE FROM RG_SCHEDULE_INSTRUCTOR`, []);
+
+                // 5. Archive RG_SCHEDULE_COURSE -> RG_SCHEDULE_COURSE_HIS
+                const archiveCourseSql = `
+                    INSERT INTO RG_SCHEDULE_COURSE_HIS (
+                        STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
+                        INSERT_DATE, USER_INSERT,
+                        INSERT_HIS_DATE, USER_INSERT_HIS
+                    )
+                    SELECT 
+                        STUDY_YEAR, STUDY_SEMESTER, COURSE_NO, COURSE_REMARK,
+                        INSERT_DATE, USER_INSERT,
+                        (SYSDATE + 7/24), :1
+                    FROM RG_SCHEDULE_COURSE
+                `;
+                try {
+                    await tx.executeOne(archiveCourseSql, [cleanUser]);
+                } catch (e) {
+                    console.warn('[resetAllData archiveCourse warning]', e?.message);
+                }
+
+                // Delete RG_SCHEDULE_COURSE
+                await tx.executeOne(`DELETE FROM RG_SCHEDULE_COURSE`, []);
+
+                // 6. Archive RG_SCHEDULE_PAIR_COURSE -> RG_SCHEDULE_PAIR_COURSE_HIS
+                const archivePairSql = `
+                    INSERT INTO RG_SCHEDULE_PAIR_COURSE_HIS 
+                    (PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, INSERT_DATE)
+                    SELECT PAIR_COURSE_GROUP_ID, COURSE_NO, START_YEAR, STOP_YEAR, YEAR_LEVEL, SEMESTER, (SYSDATE + 7/24)
+                    FROM RG_SCHEDULE_PAIR_COURSE
+                `;
+                try {
+                    await tx.executeOne(archivePairSql, []);
+                } catch (e) {
+                    console.warn('[resetAllData archivePair warning]', e?.message);
+                }
+
+                // Delete RG_SCHEDULE_PAIR_COURSE
+                try {
+                    await tx.executeOne(`DELETE FROM RG_SCHEDULE_PAIR_COURSE`, []);
+                } catch (e) {
+                    console.warn('[resetAllData deletePair warning]', e?.message);
+                }
+
+                // 7. Archive RG_SCHEDULE_CURRICULUM -> RG_SCHEDULE_CURRICULUM_HIS
+                const archiveCurrSql = `
+                    INSERT INTO RG_SCHEDULE_CURRICULUM_HIS 
+                    (FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, INSERT_HIS_DATE, USER_INSERT, USER_INSERT_HIS)
+                    SELECT FACULTY_NO, GROUP_NO, SUB_GROUP_NO, YEAR_LEVEL, SEMESTER, COURSE_NO, YEAR_ENROLL, INSERT_DATE, (SYSDATE + 7/24), USER_INSERT, :1
+                    FROM RG_SCHEDULE_CURRICULUM
+                `;
+                try {
+                    await tx.executeOne(archiveCurrSql, [cleanUser]);
+                } catch (e) {
+                    console.warn('[resetAllData archiveCurr warning]', e?.message);
+                }
+
+                // Delete RG_SCHEDULE_CURRICULUM
+                try {
+                    await tx.executeOne(`DELETE FROM RG_SCHEDULE_CURRICULUM`, []);
+                } catch (e) {
+                    console.warn('[resetAllData deleteCurr warning]', e?.message);
+                }
+
+                // 8. Delete RG_SCHEDULE_YEARSEM
+                await tx.executeOne(`DELETE FROM RG_SCHEDULE_YEARSEM`, []);
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: 'รีเซ็ตข้อมูลทุกปีภาคและย้ายข้อมูลทั้งหมดไปยังตารางประวัติ (HIS) เรียบร้อยแล้ว'
+            });
+        } catch (error) {
+            console.error('[YearSemController.resetAllData error]', error);
+            return res.status(500).json({ success: false, message: error.message });
+        }
     }
 };
 
 module.exports = YearSemController;
+

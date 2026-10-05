@@ -1338,13 +1338,14 @@ const TimetableQueryController = {
                     LEFT JOIN UGB_INSTRUCTOR ui ON TRIM(rt.INSTRUCTOR_CODE) = TRIM(ui.INSTRUCTOR_CODE)
                     LEFT JOIN UGB_RANK ur ON ui.RANK_NO = ur.RANK_NO
                     WHERE TRIM(rt.STUDY_YEAR) = :1 AND TRIM(rt.STUDY_SEMESTER) = :2
-                    ORDER BY rt.INSTRUCTOR_GROUP ASC, TO_NUMBER(rt.INSTRUCTOR_ORD) ASC
+                    ORDER BY rt.INSTRUCTOR_GROUP ASC, NVL(TO_NUMBER(REGEXP_SUBSTR(rt.INSTRUCTOR_ORD, '^[0-9]+')), 999) ASC
                 `;
                 const teachRes = await SelectModel.findAll(res, teachSql, [sYear, sSem]);
                 const teachRows = teachRes?.rows || [];
                 const teachMap = {};
                 teachRows.forEach(t => {
                     const grp = t.INSTRUCTOR_GROUP ? t.INSTRUCTOR_GROUP.toString().trim() : '';
+                    if (!grp) return;
                     if (!teachMap[grp]) teachMap[grp] = [];
                     if (!teachMap[grp].some(i => i.INSTRUCTOR_CODE === t.INSTRUCTOR_CODE)) {
                         teachMap[grp].push({
@@ -1356,12 +1357,15 @@ const TimetableQueryController = {
                     }
                 });
 
-                srcList = srcList.map(item => ({
-                    ...item,
-                    DAY_CODE: Number(item.DAY_CODE),
-                    TIME_CODE: Number(item.TIME_CODE),
-                    INSTRUCTORS: teachMap[item.INSTR_GROUP ? item.INSTR_GROUP.toString().trim() : ''] || []
-                }));
+                srcList = srcList.map(item => {
+                    const grp = item.INSTR_GROUP ? item.INSTR_GROUP.toString().trim() : '';
+                    return {
+                        ...item,
+                        DAY_CODE: Number(item.DAY_CODE),
+                        TIME_CODE: Number(item.TIME_CODE),
+                        INSTRUCTORS: grp && teachMap[grp] ? teachMap[grp] : []
+                    };
+                });
             }
 
             if (srcList.length === 0) {
@@ -1377,19 +1381,42 @@ const TimetableQueryController = {
             // 2. Fetch Time Slots for period label and overlap calculation
             const isSummer = tSem === '3' || tSem.toUpperCase() === 'S';
             const timeFlag = isSummer ? '2' : '1';
+            const defaultRegularTimes = {
+                1: { start: '0800', end: '0915', period: '08:00 - 09:15' },
+                2: { start: '0925', end: '1040', period: '09:25 - 10:40' },
+                3: { start: '1050', end: '1205', period: '10:50 - 12:05' },
+                4: { start: '1215', end: '1330', period: '12:15 - 13:30' },
+                5: { start: '1340', end: '1455', period: '13:40 - 14:55' },
+                6: { start: '1505', end: '1620', period: '15:05 - 16:20' },
+                7: { start: '1630', end: '1745', period: '16:30 - 17:45' },
+                8: { start: '1755', end: '1910', period: '17:55 - 19:10' },
+            };
+            const defaultSummerTimes = {
+                1: { start: '0835', end: '0950', period: '08:35 - 09:50' },
+                2: { start: '0955', end: '1110', period: '09:55 - 11:10' },
+                3: { start: '1115', end: '1230', period: '11:15 - 12:30' },
+                4: { start: '1235', end: '1350', period: '12:35 - 13:50' },
+                5: { start: '1355', end: '1510', period: '13:55 - 15:10' },
+                6: { start: '1515', end: '1630', period: '15:15 - 16:30' },
+                7: { start: '1635', end: '1750', period: '16:35 - 17:50' },
+                8: { start: '1755', end: '1910', period: '17:55 - 19:10' },
+            };
+            const timeMap = { ...(isSummer ? defaultSummerTimes : defaultRegularTimes) };
             const timesSql = `
                 SELECT TRIM(TIME_CODE) AS TIME_CODE, TRIM(TIME_START) AS TIME_START, TRIM(TIME_END) AS TIME_END
                 FROM RG_SCHEDULE_TIME
                 WHERE TRIM(TIME_FLAG) = :1
             `;
             const timeRes = await SelectModel.findAll(res, timesSql, [timeFlag]);
-            const timeMap = {};
             (timeRes?.rows || []).forEach(tm => {
-                timeMap[Number(tm.TIME_CODE)] = {
-                    start: tm.TIME_START,
-                    end: tm.TIME_END,
-                    period: `${formatMilitaryTime(tm.TIME_START)} - ${formatMilitaryTime(tm.TIME_END)}`
-                };
+                const codeNum = Number(tm.TIME_CODE);
+                if (!isNaN(codeNum)) {
+                    timeMap[codeNum] = {
+                        start: tm.TIME_START,
+                        end: tm.TIME_END,
+                        period: `${formatMilitaryTime(tm.TIME_START)} - ${formatMilitaryTime(tm.TIME_END)}`
+                    };
+                }
             });
 
             // 2.1 Fetch Paired Courses (RG_SCHEDULE_PAIR_COURSE)
@@ -1560,6 +1587,16 @@ const TimetableQueryController = {
             }
 
             // 4. Check conflicts for each source class
+            const defaultRu30Times = {
+                1: { start: '0730', end: '0920' },
+                2: { start: '0930', end: '1120' },
+                3: { start: '1130', end: '1320' },
+                4: { start: '1330', end: '1520' },
+                5: { start: '1530', end: '1720' },
+                6: { start: '1730', end: '1920' },
+                7: { start: '1930', end: '2120' },
+            };
+
             const processedResults = srcList.map(cls => {
                 const slotKey = `${cls.DAY_CODE}_${cls.TIME_CODE}`;
                 const slotInfo = timeMap[cls.TIME_CODE] || { start: '', end: '', period: `คาบที่ ${cls.TIME_CODE}` };
@@ -1568,8 +1605,10 @@ const TimetableQueryController = {
 
                 // A. Check target room occupancy
                 const roomOccupant = targetOccupiedRoomMap[slotKey];
+                const cleanCourseNo = (cls.COURSE_NO || '').trim().toUpperCase();
                 if (roomOccupant) {
-                    if (roomOccupant.courseNo === cls.COURSE_NO) {
+                    const occupantCourseNo = (roomOccupant.courseNo || '').trim().toUpperCase();
+                    if (occupantCourseNo === cleanCourseNo) {
                         isAlreadyCopied = true;
                     } else {
                         conflicts.push(`ห้อง ${tRoom} มีการจัดสอนวิชา ${roomOccupant.courseNo} ${roomOccupant.courseName ? '(' + roomOccupant.courseName + ')' : ''} อยู่แล้วในคาบนี้`);
@@ -1578,17 +1617,24 @@ const TimetableQueryController = {
 
                 // B. Check Target MR.30
                 (cls.INSTRUCTORS || []).forEach(inst => {
-                    const iCode = inst.INSTRUCTOR_CODE;
+                    const iCode = (inst.INSTRUCTOR_CODE || '').trim();
                     const iName = `${inst.RANK_NAME_THAI_S || ''} ${inst.INSTRUCTOR_NAME_THAI || iCode}`.trim();
 
                     for (const ru of targetRu30Rows) {
-                        if (ru.INSTRUCTOR_CODE === iCode && Number(ru.DAY_CODE) === cls.DAY_CODE) {
-                            const overlaps = isTimeOverlapping(slotInfo.start, slotInfo.end, ru.RU30_START, ru.RU30_END) || Number(ru.TIME_CODE) === cls.TIME_CODE;
+                        const ruCode = (ru.INSTRUCTOR_CODE || '').trim();
+                        if (ruCode === iCode && Number(ru.DAY_CODE) === Number(cls.DAY_CODE)) {
+                            const ruTimeCode = Number(ru.TIME_CODE);
+                            const defRu = defaultRu30Times[ruTimeCode] || {};
+                            const ruStart = ru.RU30_START || defRu.start;
+                            const ruEnd = ru.RU30_END || defRu.end;
+
+                            const overlaps = isTimeOverlapping(slotInfo.start, slotInfo.end, ruStart, ruEnd) || (ruTimeCode > 0 && ruTimeCode === Number(cls.TIME_CODE));
                             if (overlaps) {
-                                const timeStr = ru.RU30_START && ru.RU30_END 
-                                    ? `${formatMilitaryTime(ru.RU30_START)}-${formatMilitaryTime(ru.RU30_END)}` 
+                                const timeStr = ruStart && ruEnd 
+                                    ? `${formatMilitaryTime(ruStart)}-${formatMilitaryTime(ruEnd)}` 
                                     : `คาบ ${ru.TIME_CODE}`;
-                                conflicts.push(`ติดสอน มร.30 ปี ${tYear}/${tSem}: ${iName} (วิชา ${ru.RU30_COURSE_NO} เวลา ${timeStr})`);
+                                const ruCourse = ru.RU30_COURSE_NO ? `วิชา ${ru.RU30_COURSE_NO}` : '';
+                                conflicts.push(`ติดสอน มร.30 ปี ${tYear}/${tSem}: ${iName} (${ruCourse} เวลา ${timeStr})`.trim());
                             }
                         }
                     }
@@ -1596,7 +1642,8 @@ const TimetableQueryController = {
                     // C. Check Target Schedule Teaching
                     const busyKey = `${iCode}_${cls.DAY_CODE}_${cls.TIME_CODE}`;
                     const busyInfo = targetScheduleBusyMap[busyKey];
-                    if (busyInfo && (!isAlreadyCopied || busyInfo.courseNo !== cls.COURSE_NO)) {
+                    const busyCourseNo = (busyInfo?.courseNo || '').trim().toUpperCase();
+                    if (busyInfo && (!isAlreadyCopied || busyCourseNo !== cleanCourseNo)) {
                         conflicts.push(`ตารางสอนชนกัน: ${iName} มีสอนวิชา ${busyInfo.courseNo} (ห้อง ${busyInfo.roomCode || '-'}) ในคาบนี้แล้ว`);
                     }
                 });
@@ -1613,7 +1660,8 @@ const TimetableQueryController = {
                     canCopy = false;
                 } else if (uniqueConflicts.length > 0) {
                     statusColor = 'red';
-                    statusText = `ไม่สามารถคัดลอกได้ (${uniqueConflicts.length} ข้อขัดแย้ง)`;
+                    const hasMr30 = uniqueConflicts.some(c => c.includes('มร.30'));
+                    statusText = hasMr30 ? 'ติด มร.30' : `ติดขัด (${uniqueConflicts.length} ข้อขัดแย้ง)`;
                     canCopy = false;
                 }
 

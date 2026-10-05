@@ -1,4 +1,5 @@
 const SelectModel = require('../../models/db/SelectModel');
+const { getActiveYearSemHelper } = require('../../utils/timetableUtils');
 
 /**
  * TimetableListController
@@ -18,15 +19,10 @@ const TimetableListController = {
             let targetSem = semester;
 
             if (!targetYear || !targetSem) {
-                const activeSql = `
-                    SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER 
-                    FROM RG_SCHEDULE_YEARSEM 
-                    WHERE STUDY_ACTIVE = '1'
-                `;
-                const activeRes = await SelectModel.findAll(res, activeSql, []);
-                if (activeRes.rows && activeRes.rows.length > 0) {
-                    targetYear = activeRes.rows[0].STUDY_YEAR;
-                    targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                const activeRes = await getActiveYearSemHelper(res);
+                if (activeRes) {
+                    targetYear = activeRes.STUDY_YEAR;
+                    targetSem = activeRes.STUDY_SEMESTER;
                 }
             }
 
@@ -243,26 +239,10 @@ const TimetableListController = {
             let targetSem = semester;
 
             if (!targetYear || !targetSem) {
-                const activeSql = `
-                    SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER 
-                    FROM RG_SCHEDULE_YEARSEM 
-                    WHERE STUDY_ACTIVE = '1'
-                `;
-                const activeRes = await SelectModel.findAll(res, activeSql, []);
-                if (activeRes.rows && activeRes.rows.length > 0) {
-                    targetYear = activeRes.rows[0].STUDY_YEAR;
-                    targetSem = activeRes.rows[0].STUDY_SEMESTER;
-                } else {
-                    const latestSql = `
-                        SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER 
-                        FROM RG_SCHEDULE_YEARSEM 
-                        ORDER BY STUDY_YEAR DESC, STUDY_SEMESTER DESC
-                    `;
-                    const latestRes = await SelectModel.findAll(res, latestSql, []);
-                    if (latestRes.rows && latestRes.rows.length > 0) {
-                        targetYear = latestRes.rows[0].STUDY_YEAR;
-                        targetSem = latestRes.rows[0].STUDY_SEMESTER;
-                    }
+                const activeRes = await getActiveYearSemHelper(res);
+                if (activeRes) {
+                    targetYear = activeRes.STUDY_YEAR;
+                    targetSem = activeRes.STUDY_SEMESTER;
                 }
             }
 
@@ -342,11 +322,10 @@ const TimetableListController = {
             let targetSem = semester ? semester.toString().trim() : '';
 
             if (!targetYear || !targetSem) {
-                const activeSql = `SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER FROM RG_SCHEDULE_YEARSEM WHERE STUDY_ACTIVE = '1'`;
-                const activeRes = await SelectModel.findAll(res, activeSql, []);
-                if (activeRes.rows && activeRes.rows.length > 0) {
-                    targetYear = activeRes.rows[0].STUDY_YEAR;
-                    targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                const activeRes = await getActiveYearSemHelper(res);
+                if (activeRes) {
+                    targetYear = activeRes.STUDY_YEAR;
+                    targetSem = activeRes.STUDY_SEMESTER;
                 }
             }
 
@@ -381,11 +360,10 @@ const TimetableListController = {
             let targetSem = semester ? semester.toString().trim() : '';
 
             if (!targetYear || !targetSem) {
-                const activeSql = `SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER FROM RG_SCHEDULE_YEARSEM WHERE STUDY_ACTIVE = '1'`;
-                const activeRes = await SelectModel.findAll(res, activeSql, []);
-                if (activeRes.rows && activeRes.rows.length > 0) {
-                    targetYear = activeRes.rows[0].STUDY_YEAR;
-                    targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                const activeRes = await getActiveYearSemHelper(res);
+                if (activeRes) {
+                    targetYear = activeRes.STUDY_YEAR;
+                    targetSem = activeRes.STUDY_SEMESTER;
                 }
             }
 
@@ -417,11 +395,10 @@ const TimetableListController = {
             let targetSem = semester ? semester.toString().trim() : '';
 
             if (!targetYear || !targetSem) {
-                const activeSql = `SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER FROM RG_SCHEDULE_YEARSEM WHERE STUDY_ACTIVE = '1'`;
-                const activeRes = await SelectModel.findAll(res, activeSql, []);
-                if (activeRes.rows && activeRes.rows.length > 0) {
-                    targetYear = activeRes.rows[0].STUDY_YEAR;
-                    targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                const activeRes = await getActiveYearSemHelper(res);
+                if (activeRes) {
+                    targetYear = activeRes.STUDY_YEAR;
+                    targetSem = activeRes.STUDY_SEMESTER;
                 }
             }
 

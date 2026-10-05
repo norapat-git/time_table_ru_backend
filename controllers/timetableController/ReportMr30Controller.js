@@ -1,4 +1,5 @@
 const SelectModel = require('../../models/db/SelectModel');
+const { getActiveYearSemHelper } = require('../../utils/timetableUtils');
 
 const ReportMr30Controller = {
     async getReportMr30(req, res) {
@@ -9,15 +10,10 @@ const ReportMr30Controller = {
             let targetSem = semester ? semester.toString().trim() : '';
 
             if (!targetYear || !targetSem) {
-                const activeSql = `
-                    SELECT TRIM(STUDY_YEAR) AS STUDY_YEAR, TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER 
-                    FROM RG_SCHEDULE_YEARSEM 
-                    WHERE STUDY_ACTIVE = '1'
-                `;
-                const activeRes = await SelectModel.findAll(res, activeSql, []);
-                if (activeRes.rows && activeRes.rows.length > 0) {
-                    targetYear = activeRes.rows[0].STUDY_YEAR;
-                    targetSem = activeRes.rows[0].STUDY_SEMESTER;
+                const activeRes = await getActiveYearSemHelper(res);
+                if (activeRes) {
+                    targetYear = activeRes.STUDY_YEAR;
+                    targetSem = activeRes.STUDY_SEMESTER;
                 }
             }
 

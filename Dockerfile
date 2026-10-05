@@ -1,8 +1,6 @@
-FROM node:18-bookworm
+FROM node:18-bullseye
 
 ENV NODE_ENV=production
-ENV DEBIAN_FRONTEND=noninteractive
-
 WORKDIR /usr/src/app
 
 COPY package*.json ./
@@ -11,12 +9,12 @@ RUN npm install --production --silent \
     && npm install -g pm2 nodemon
 
 # ===== install dependency oracle & download Instant Client =====
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+RUN apt-get update && apt-get install -y \
+    libaio1 \
+    libnsl-dev \
     tzdata \
     wget \
     unzip \
-    libaio1t64 \
     && mkdir -p /usr/lib/instantclient \
     && wget -q https://download.oracle.com/otn_software/linux/instantclient/1923000/instantclient-basiclite-linux.x64-19.23.0.0.0dbru.zip -O /tmp/instantclient.zip \
     && unzip -q /tmp/instantclient.zip -d /tmp/ic/ \
@@ -25,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/lib/instantclient/libclntsh.so.* /usr/lib/instantclient/libclntsh.so \
     && rm -rf /var/lib/apt/lists/*
 
-ENV LD_LIBRARY_PATH=/usr/lib/instantclient:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/usr/lib/instantclient
 ENV ORACLE_HOME=/usr/lib/instantclient
 ENV TNS_ADMIN=/usr/lib/instantclient/network/admin
 

@@ -64,8 +64,49 @@ function isTimeOverlapping(startA, endA, startB, endB) {
     return aS < bE && aE > bS;
 }
 
+/**
+ * ดึงปีการศึกษาและภาคเรียนที่ active จาก RG_SCHEDULE_YEARSEM
+ * หากไม่มี record ที่ STUDY_ACTIVE = '1' จะ fallback ไปยังปี/ภาคเรียนล่าสุด
+ * @param {object} res - Express response object (สำหรับ SelectModel.findAll)
+ * @returns {Promise<{STUDY_YEAR: string, STUDY_SEMESTER: string, STUDY_ACTIVE: string}|null>}
+ */
+async function getActiveYearSemHelper(res) {
+    try {
+        const SelectModel = require('../models/db/SelectModel');
+        const activeSql = `
+            SELECT 
+                TRIM(STUDY_YEAR) AS STUDY_YEAR,
+                TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER,
+                TRIM(NVL(STUDY_ACTIVE, '0')) AS STUDY_ACTIVE
+            FROM RG_SCHEDULE_YEARSEM
+            WHERE TRIM(STUDY_ACTIVE) = '1'
+            AND ROWNUM = 1
+        `;
+        let result = await SelectModel.findAll(res, activeSql, []);
+        let rows = result.rows ?? [];
+        if (rows.length === 0) {
+            const fallbackSql = `
+                SELECT 
+                    TRIM(STUDY_YEAR) AS STUDY_YEAR,
+                    TRIM(STUDY_SEMESTER) AS STUDY_SEMESTER,
+                    TRIM(NVL(STUDY_ACTIVE, '0')) AS STUDY_ACTIVE
+                FROM RG_SCHEDULE_YEARSEM
+                ORDER BY STUDY_YEAR DESC, STUDY_SEMESTER DESC
+            `;
+            result = await SelectModel.findAll(res, fallbackSql, []);
+            rows = result.rows ?? [];
+        }
+        return rows.length > 0 ? rows[0] : null;
+    } catch (err) {
+        console.error('[getActiveYearSemHelper error]', err);
+        return null;
+    }
+}
+
 module.exports = {
     sanitizeUsername,
     formatMilitaryTime,
     isTimeOverlapping,
+    getActiveYearSemHelper,
 };
+

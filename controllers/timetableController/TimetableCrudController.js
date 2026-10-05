@@ -78,6 +78,71 @@ async function getNextInstrGroup(tx) {
 }
 
 /**
+ * Helper: Find existing INSTR_GROUP with the EXACT same set of instructors in this year/semester,
+ * or create a new INSTR_GROUP with RG_SCHEDULE_INSTRUCTOR_GROUP and RG_SCHEDULE_TEACH entries.
+ */
+async function resolveInstructorGroup(tx, year, sem, instructorCodes, username) {
+    if (!instructorCodes || instructorCodes.length === 0) {
+        return null;
+    }
+
+    const uniqueCodes = Array.from(new Set(instructorCodes.map(c => (c || '').toString().trim()).filter(Boolean)));
+    if (uniqueCodes.length === 0) {
+        return null;
+    }
+
+    // 1. Fetch all existing groups and their instructor codes in target year/semester
+    const existingTeachSql = `
+        SELECT TRIM(INSTRUCTOR_GROUP) AS INSTRUCTOR_GROUP, TRIM(INSTRUCTOR_CODE) AS INSTRUCTOR_CODE
+        FROM RG_SCHEDULE_TEACH
+        WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2
+    `;
+    const teachRows = await tx.fetchAll(existingTeachSql, [year, sem]);
+    const groupMap = {};
+    (teachRows || []).forEach(r => {
+        const grp = r.INSTRUCTOR_GROUP;
+        if (!groupMap[grp]) groupMap[grp] = new Set();
+        groupMap[grp].add(r.INSTRUCTOR_CODE);
+    });
+
+    // 2. Check for an exact set match
+    const targetSet = new Set(uniqueCodes);
+    for (const [grp, instSet] of Object.entries(groupMap)) {
+        if (instSet.size === targetSet.size) {
+            let isMatch = true;
+            for (const code of targetSet) {
+                if (!instSet.has(code)) {
+                    isMatch = false;
+                    break;
+                }
+            }
+            if (isMatch) {
+                return Number(grp);
+            }
+        }
+    }
+
+    // 3. No exact match found -> Create a new group
+    const newGroup = await getNextInstrGroup(tx);
+    try {
+        await tx.executeOne(`INSERT INTO RG_SCHEDULE_INSTRUCTOR_GROUP (INSTR_GROUP) VALUES (:1)`, [newGroup]);
+    } catch (igErr) {
+        console.warn('[RG_SCHEDULE_INSTRUCTOR_GROUP insert notice]', igErr?.message);
+    }
+
+    for (let i = 0; i < uniqueCodes.length; i++) {
+        const code = uniqueCodes[i];
+        await tx.executeOne(`
+            INSERT INTO RG_SCHEDULE_TEACH (
+                STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_GROUP, INSTRUCTOR_CODE, INSTRUCTOR_ORD, INSERT_DATE, USER_INSERT
+            ) VALUES (:1, :2, :3, :4, :5, (SYSDATE + 7/24), :6)
+        `, [year, sem, newGroup.toString(), code, (i + 1).toString(), username]);
+    }
+
+    return newGroup;
+}
+
+/**
  * TimetableCrudController
  * รับผิดชอบ: เพิ่ม / แก้ไข / ลบ / ย้ายคาบตารางสอน
  *  - addScheduleClass          → POST /timetable/add
@@ -366,52 +431,7 @@ const TimetableCrudController = {
                 }
 
                 if (uniqueCodes.length > 0) {
-                    const sameCourseSql = `
-                        SELECT DISTINCT INSTR_GROUP 
-                        FROM RG_SCHEDULE_CLASS 
-                        WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(COURSE_NO) = :3 AND INSTR_GROUP IS NOT NULL AND INSTR_GROUP > 0
-                    `;
-                    const sameCourseRes = await tx.fetchOne(sameCourseSql, [cleanYear, cleanSem, cleanCourseNo]);
-
-                    if (sameCourseRes && sameCourseRes.INSTR_GROUP) {
-                        targetInstrGroup = Number(sameCourseRes.INSTR_GROUP);
-                    } else {
-                        targetInstrGroup = await getNextInstrGroup(tx);
-
-                        try {
-                            await tx.executeOne(
-                                `INSERT INTO RG_SCHEDULE_INSTRUCTOR_GROUP (INSTR_GROUP) VALUES (:1)`,
-                                [targetInstrGroup]
-                            );
-                        } catch (igErr) {
-                            console.warn('[RG_SCHEDULE_INSTRUCTOR_GROUP insert notice]', igErr?.message);
-                        }
-
-                        for (let i = 0; i < uniqueCodes.length; i++) {
-                            const instrCode = uniqueCodes[i];
-                            const insertTeachSql = `
-                                INSERT INTO RG_SCHEDULE_TEACH (
-                                    STUDY_YEAR,
-                                    STUDY_SEMESTER,
-                                    INSTRUCTOR_GROUP,
-                                    INSTRUCTOR_CODE,
-                                    INSTRUCTOR_ORD,
-                                    INSERT_DATE,
-                                    USER_INSERT
-                                ) VALUES (
-                                    :1, :2, :3, :4, :5, (SYSDATE + 7/24), :6
-                                )
-                            `;
-                            await tx.executeOne(insertTeachSql, [
-                                cleanYear,
-                                cleanSem,
-                                targetInstrGroup.toString(),
-                                instrCode,
-                                (i + 1).toString(),
-                                user,
-                            ]);
-                        }
-                    }
+                    targetInstrGroup = await resolveInstructorGroup(tx, cleanYear, cleanSem, uniqueCodes, user);
                 }
 
                 for (const cleanTime of targetTimeCodes) {
@@ -1482,6 +1502,7 @@ const TimetableCrudController = {
                             TRIM(ru.INSTRUCTOR_CODE) AS INSTRUCTOR_CODE,
                             TRIM(ui.INSTRUCTOR_NAME_THAI) AS INSTRUCTOR_NAME_THAI,
                             TRIM(ru.COURSE_NO) AS RU30_COURSE_NO,
+                            ru.TIME_CODE AS TIME_CODE,
                             TRIM(ts.TIME_START) AS RU30_START,
                             TRIM(ts.TIME_END) AS RU30_END
                         FROM UGB_RU30 ru
@@ -1494,21 +1515,60 @@ const TimetableCrudController = {
                     `;
                     const ru30Rows = await tx.fetchAll(ru30CheckSql, [cleanYear, cleanSem, cleanDay, ...uniqueCodes]);
 
+                    const defaultRegularTimes = {
+                        1: { start: '0800', end: '0915' },
+                        2: { start: '0925', end: '1040' },
+                        3: { start: '1050', end: '1205' },
+                        4: { start: '1215', end: '1330' },
+                        5: { start: '1340', end: '1455' },
+                        6: { start: '1505', end: '1620' },
+                        7: { start: '1630', end: '1745' },
+                        8: { start: '1755', end: '1910' },
+                    };
+                    const defaultSummerTimes = {
+                        1: { start: '0835', end: '0950' },
+                        2: { start: '0955', end: '1110' },
+                        3: { start: '1115', end: '1230' },
+                        4: { start: '1235', end: '1350' },
+                        5: { start: '1355', end: '1510' },
+                        6: { start: '1515', end: '1630' },
+                        7: { start: '1635', end: '1750' },
+                        8: { start: '1755', end: '1910' },
+                    };
+                    const defaultRu30Times = {
+                        1: { start: '0730', end: '0920' },
+                        2: { start: '0930', end: '1120' },
+                        3: { start: '1130', end: '1320' },
+                        4: { start: '1330', end: '1520' },
+                        5: { start: '1530', end: '1720' },
+                        6: { start: '1730', end: '1920' },
+                        7: { start: '1930', end: '2120' },
+                    };
+
                     const isSummer = cleanSem === '3' || cleanSem.toUpperCase() === 'S';
                     const timeFlag = isSummer ? '2' : '1';
+                    const fallbackSlot = (isSummer ? defaultSummerTimes : defaultRegularTimes)[Number(cleanTime)] || {};
+
                     const slotTimeSql = `
                         SELECT TRIM(TIME_START) AS TIME_START, TRIM(TIME_END) AS TIME_END
                         FROM RG_SCHEDULE_TIME 
                         WHERE TRIM(TIME_FLAG) = :1 AND TRIM(TIME_CODE) = :2
                     `;
                     const slotTimeRow = await tx.fetchOne(slotTimeSql, [timeFlag, cleanTime.toString()]);
-                    const slotStart = slotTimeRow?.TIME_START;
-                    const slotEnd = slotTimeRow?.TIME_END;
+                    const slotStart = slotTimeRow?.TIME_START || fallbackSlot.start;
+                    const slotEnd = slotTimeRow?.TIME_END || fallbackSlot.end;
 
                     for (const r of (ru30Rows || [])) {
-                        if (isTimeOverlapping(slotStart, slotEnd, r.RU30_START, r.RU30_END)) {
+                        const ruTimeCode = Number(r.TIME_CODE);
+                        const defRu = defaultRu30Times[ruTimeCode] || {};
+                        const ruStart = r.RU30_START || defRu.start;
+                        const ruEnd = r.RU30_END || defRu.end;
+
+                        const overlaps = isTimeOverlapping(slotStart, slotEnd, ruStart, ruEnd) || (ruTimeCode > 0 && ruTimeCode === Number(cleanTime));
+                        if (overlaps) {
                             const instName = r.INSTRUCTOR_NAME_THAI || r.INSTRUCTOR_CODE;
-                            throw new Error(`อาจารย์ ${instName} ติดสอน มร.30 (${r.RU30_COURSE_NO} เวลา ${formatMilitaryTime(r.RU30_START)}-${formatMilitaryTime(r.RU30_END)}) ในปี ${cleanYear}/${cleanSem}`);
+                            const timeStr = ruStart && ruEnd ? `${formatMilitaryTime(ruStart)}-${formatMilitaryTime(ruEnd)}` : `คาบ ${r.TIME_CODE}`;
+                            throw new Error(`ไม่สามารถคัดลอกได้: อาจารย์ ${instName} ติดสอน มร.30 (${r.RU30_COURSE_NO} เวลา ${timeStr}) ในปี ${cleanYear}/${cleanSem}`);
                         }
                     }
 
@@ -1578,30 +1638,7 @@ const TimetableCrudController = {
                 // 5. Determine INSTR_GROUP & Insert TEACH
                 let targetInstrGroup = null;
                 if (uniqueCodes.length > 0) {
-                    const sameCourseRes = await tx.fetchOne(`
-                        SELECT DISTINCT INSTR_GROUP 
-                        FROM RG_SCHEDULE_CLASS 
-                        WHERE TRIM(STUDY_YEAR) = :1 AND TRIM(STUDY_SEMESTER) = :2 AND TRIM(COURSE_NO) = :3 AND INSTR_GROUP IS NOT NULL AND INSTR_GROUP > 0
-                    `, [cleanYear, cleanSem, cleanCourseNo]);
-
-                    if (sameCourseRes && sameCourseRes.INSTR_GROUP) {
-                        targetInstrGroup = Number(sameCourseRes.INSTR_GROUP);
-                    } else {
-                        targetInstrGroup = await getNextInstrGroup(tx);
-                        try {
-                            await tx.executeOne(`INSERT INTO RG_SCHEDULE_INSTRUCTOR_GROUP (INSTR_GROUP) VALUES (:1)`, [targetInstrGroup]);
-                        } catch (igErr) {
-                            console.warn('[RG_SCHEDULE_INSTRUCTOR_GROUP insert notice]', igErr?.message);
-                        }
-                        for (let i = 0; i < uniqueCodes.length; i++) {
-                            const code = uniqueCodes[i];
-                            await tx.executeOne(`
-                                INSERT INTO RG_SCHEDULE_TEACH (
-                                    STUDY_YEAR, STUDY_SEMESTER, INSTRUCTOR_GROUP, INSTRUCTOR_CODE, INSTRUCTOR_ORD, INSERT_DATE, USER_INSERT
-                                ) VALUES (:1, :2, :3, :4, :5, (SYSDATE + 7/24), :6)
-                            `, [cleanYear, cleanSem, targetInstrGroup.toString(), code, (i + 1).toString(), username]);
-                        }
-                    }
+                    targetInstrGroup = await resolveInstructorGroup(tx, cleanYear, cleanSem, uniqueCodes, username);
                 }
 
                 // 6. Insert into RG_SCHEDULE_CLASS
